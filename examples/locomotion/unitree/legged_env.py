@@ -304,6 +304,7 @@ class LeggedEnv:
         )
         self.noise_scale_vec = self._get_noise_scale_vec()
         self.last_actions = torch.zeros_like(self.actions)
+        self.second_last_actions = torch.zeros_like(self.actions)
         self.dof_pos = torch.zeros_like(self.actions)
         self.dof_vel = torch.zeros_like(self.actions)
         self.hip_pos = torch.zeros_like(self.hip_actions)
@@ -704,6 +705,7 @@ class LeggedEnv:
         if self.add_noise:
             self.obs_buf += (2 * torch.rand_like(self.obs_buf) - 1) * self.noise_scale_vec
         self.check_and_sanitize_observations()
+        self.second_last_actions[:] = self.last_actions[:]
         self.last_actions[:] = self.actions[:]
         self.last_dof_vel[:] = self.dof_vel[:]
 
@@ -869,6 +871,7 @@ class LeggedEnv:
 
         # reset buffers
         self.last_actions[envs_idx] = 0.0
+        self.second_last_actions[envs_idx] = 0.0
         self.last_dof_vel[envs_idx] = 0.0
         self.episode_length_buf[envs_idx] = 0
         self.feet_air_time[envs_idx] = 0.0
@@ -1117,6 +1120,10 @@ class LeggedEnv:
     def _reward_action_rate(self):
         # Penalize changes in actions
         return torch.sum(torch.square(self.last_actions - self.actions), dim=1)
+
+    def _reward_action_rate_2nd_order(self):
+        # Penalize changes in actions
+        return torch.sum(torch.square(self.second_last_actions - 2*self.last_actions + self.actions), dim=1)
 
     def _reward_similar_to_default(self):
         # Penalize joint poses far away from default pose

@@ -181,6 +181,7 @@ def get_cfgs():
             "ang_vel_xy": -0.05,
             "collision": -2.0,
             "action_rate": -0.1,
+            "action_rate_2nd_order": -0.1,
             "contact_no_vel": -0.02,
             "dof_acc": -2.5e-7,
             "hip_pos": -.1, #-1.0
