@@ -167,6 +167,7 @@ def get_cfgs():
         "step_period": 0.8,
         "step_offset": 0.5,
         "front_feet_relative_height_from_base": 0.1,
+        "front_feet_relative_height_from_world": 0.2,
         "rear_feet_relative_height_from_base": 0.15,
         "soft_dof_pos_limit": 0.9,
         "soft_torque_limit": 1.0,

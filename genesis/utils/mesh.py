@@ -13,7 +13,9 @@ import tetgen
 from PIL import Image
 
 import genesis as gs
+print(gs.__file__)
 from genesis.ext import trimesh
+print(trimesh.__file__)
 
 from . import geom as gu
 from .misc import (
