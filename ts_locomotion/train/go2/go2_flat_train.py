@@ -11,7 +11,6 @@ from rsl_rl.runners import OnPolicyRunner
 import genesis as gs
 from datetime import datetime
 import re
-# import wandb
 
 def get_train_cfg(exp_name, max_iterations):
 
@@ -64,9 +63,6 @@ def get_cfgs():
         "num_actions": 12,
         "use_mjcf": True,
         "robot_description": "xml/go2/go2.xml",
-        # "robot_description": "urdf/go1/urdf/go1.urdf",
-        # joint/link names
-        # joint/link names
         'links_to_keep': ['FL_foot', 'FR_foot', 'RL_foot', 'RR_foot',],
         "default_joint_angles": {  # [rad]
             "FL_hip_joint": 0.1,
@@ -213,9 +209,9 @@ def get_cfgs():
     }
     command_cfg = {
         "num_commands": 3,
-        "lin_vel_x_range": [-1.0, -0.5],
-        "lin_vel_y_range": [-0.0, 0.0],
-        "ang_vel_range": [-0.0, 0.0],
+        "lin_vel_x_range": [-1.0, 1.5],
+        "lin_vel_y_range": [-0.5, 0.5],
+        "ang_vel_range": [-1.0, 1.0],
     }
     noise_cfg = {
         "add_noise": True,
@@ -255,8 +251,7 @@ def main():
     parser.add_argument("--max_iterations", type=int, default=10000)
     parser.add_argument("--resume", action="store_true", help="Resume from the latest checkpoint if this flag is set")
     parser.add_argument("--ckpt", type=int, default=0)
-    parser.add_argument("--view", action="store_true", help="If you would like to see how robot is trained")
-    parser.add_argument("--wandb_username", type=str, default="wataru-oshima-techshare")
+    parser.add_argument("--vis", action="store_true", help="If you would like to see how robot is trained")
     args = parser.parse_args()
 
     gs.init(logging_level="warning")
@@ -276,7 +271,7 @@ def main():
         reward_cfg=reward_cfg, 
         command_cfg=command_cfg,        
         terrain_cfg=terrain_cfg,        
-        show_viewer=args.view,
+        show_viewer=args.vis,
 
     )
 
@@ -305,9 +300,6 @@ def main():
     if args.resume:
         runner.load(resume_path)
 
-    wand_project_name = 'ts_genesis'
-    # wandb.init(project=wand_project_name, name=args.exp_name, dir=log_dir, mode='offline' if args.offline else 'online')
-
     pickle.dump(
         [env_cfg, obs_cfg, noise_cfg, reward_cfg, command_cfg, train_cfg, terrain_cfg],
         open(f"{log_dir}/cfgs.pkl", "wb"),
@@ -315,11 +307,8 @@ def main():
 
 
     train_cfg.update(
-        logger="wandb",
+        logger="tensorboard",
         record_interval=50,
-        user_name=args.wandb_username,
-        wandb_project=wand_project_name,
-        run_name=args.exp_name,
     )
     runner.learn(num_learning_iterations=args.max_iterations, init_at_random_ep_len=True)
 
