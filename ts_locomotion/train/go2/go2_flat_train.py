@@ -61,6 +61,7 @@ def get_train_cfg(exp_name, max_iterations):
 def get_cfgs():
     env_cfg = {
         "num_actions": 12,
+        "self_collision": False,
         "use_mjcf": True,
         "robot_description": "xml/go2/go2.xml",
         'links_to_keep': ['FL_foot', 'FR_foot', 'RL_foot', 'RR_foot',],
@@ -80,19 +81,19 @@ def get_cfgs():
             "RL_calf_joint": -1.5,
             "RR_calf_joint": -1.5,
         },
-        "dof_names": [
-            "FL_hip_joint",
-            "FL_thigh_joint",
-            "FL_calf_joint",
+        "dof_names": [ #order matters!
             "FR_hip_joint",
             "FR_thigh_joint",
             "FR_calf_joint",
-            "RL_hip_joint",
-            "RL_thigh_joint",
-            "RL_calf_joint",
+            "FL_hip_joint",
+            "FL_thigh_joint",
+            "FL_calf_joint",
             "RR_hip_joint",
             "RR_thigh_joint",
             "RR_calf_joint",
+            "RL_hip_joint",
+            "RL_thigh_joint",
+            "RL_calf_joint",
         ],
         'PD_stiffness': {'hip':   20.0,
                          'thigh': 20.0,
@@ -115,11 +116,11 @@ def get_cfgs():
             "RL_hip_joint",
             "RR_hip_joint",            
         ],
-        "termination_if_roll_greater_than": 150,  # degree. 
-        "termination_if_pitch_greater_than": 150,
+        "termination_if_roll_greater_than": 170,  # degree. 
+        "termination_if_pitch_greater_than": 180,
         "termination_if_height_lower_than": -40,
-        "termination_duration": 0.1, #seconds
-        "angle_termination_duration": 1.0, #seconds
+        "termination_duration": 1.0, #seconds
+        "angle_termination_duration": 5.0, #seconds
         # base pose
         "base_init_pos": [0.0, 0.0, 0.55],
         "base_init_quat": [1.0, 0.0, 0.0, 0.0],
@@ -157,8 +158,8 @@ def get_cfgs():
         "yaw_range": [-90, 90],
     }
     obs_cfg = {
-        "num_obs": 48,
-        "num_privileged_obs": 60,
+        "num_obs": 45,
+        "num_privileged_obs": 48,
         "obs_scales": {
             "lin_vel": 2.0,
             "ang_vel": 0.25,
@@ -186,30 +187,33 @@ def get_cfgs():
             "tracking_ang_vel": 0.75,
             "lin_vel_z": -5.0, #-5.0
             "relative_base_height": -30.0, # -30.0
-            "orientation": -.001, #-30.0
+            "orientation": -30.0,
             "ang_vel_xy": -0.05,
             "collision": -5.0,
-            "front_feet_clearance": 10.0,
-            "rear_feet_clearance": 30.0,
+            "roll_penalty": -1.0,
+            # "front_feet_clearance": 10.0,
+            # "rear_feet_clearance": 30.0,
             "action_rate": -0.01,
             # "rear_feet_level_with_front": 1.0,
             # "hip_pos": -.1, #-1.0
-            "contact_no_vel": -0.002,
+            "contact_no_vel": -0.2,
             "dof_acc": -2.5e-7,
-            "contact": 0.01,
+            # "contact": 0.01,
             "dof_pos_limits": -10.0,
             "dof_vel": -1.0e-5,
             'torques': -0.00001,
             "termination": -30.0,
             # "base_upward_progress": 2.0,
-            "calf_collision_low_clearance": -5.0,
+            # "calf_collision_low_clearance": -5.0,
             "similar_to_default": -0.01,
-            "feet_contact_forces": -0.01,
+            "feet_contact_forces": -0.001,
         },
     }
     command_cfg = {
         "num_commands": 3,
-        "lin_vel_x_range": [-1.0, 1.5],
+        "curriculum": False,
+        "curriculum_duration": 0, #1 calculated 1 iteration is 1 seocnd 2000 = 
+        "lin_vel_x_range": [-1.0, 1.0],
         "lin_vel_y_range": [-0.5, 0.5],
         "ang_vel_range": [-1.0, 1.0],
     }
@@ -226,7 +230,7 @@ def get_cfgs():
         }
     }
     terrain_cfg = {
-        "terrain_type": "plane", #plane
+        "terrain_type": "plane", #plane, trimesh, custom_plane
         "subterrain_size": 4.0,
         "horizontal_scale": 0.05,
         "vertical_scale": 0.005,
