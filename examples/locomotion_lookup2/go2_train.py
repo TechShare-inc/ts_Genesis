@@ -129,15 +129,15 @@ def get_cfgs():
         "base_height_target": 0.3,
         "feet_height_target": 0.075,
         "reward_scales": {
-            "tracking_lin_vel": 1.0,
-            "tracking_ang_vel": 0.2,
-            "lin_vel_z": -1.0,
+            "tracking_lin_vel": 0,#1.0,
+            "tracking_ang_vel": 0,#0.2,
+            "lin_vel_z": 0,#-1.0,
             "base_height": -50.0,
-            "action_rate": -0.005,
-            "similar_to_default": -0.1,
+            "action_rate": 0,#-0.005,
+            "similar_to_default": 0,#-0.1,
             # "base_pitch": -0.0000001,
-            "base_pitch": 0,
-            # "base_pitch": -0.001,
+            # "base_pitch": 0,
+            "base_pitch": -10,
         },
     }
     command_cfg = {

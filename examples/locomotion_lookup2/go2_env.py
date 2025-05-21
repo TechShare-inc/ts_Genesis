@@ -180,6 +180,8 @@ class Go2Env:
             axis=-1,
         )
 
+        print(torch.sin(self.commands[0, 3]), '=======', self.projected_gravity[0, 0], '======', self.base_euler[0, 1])
+
         self.last_actions[:] = self.actions[:]
         self.last_dof_vel[:] = self.dof_vel[:]
 
