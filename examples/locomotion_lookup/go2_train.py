@@ -3,6 +3,7 @@ import os
 import pickle
 import shutil
 from importlib import metadata
+import numpy as np
 
 try:
     try:
@@ -85,6 +86,20 @@ def get_cfgs():
             "RL_calf_joint": -1.5,
             "RR_calf_joint": -1.5,
         },
+        "lookup_joint_angles": {  # [rad]
+            "FL_hip_joint": 0.0,
+            "FR_hip_joint": 0.0,
+            "RL_hip_joint": 0.0,
+            "RR_hip_joint": 0.0,
+            "FL_thigh_joint": 0.6,
+            "FR_thigh_joint": 0.6,
+            "RL_thigh_joint": 1.3,
+            "RR_thigh_joint": 1.3,
+            "FL_calf_joint": -0.5,
+            "FR_calf_joint": -0.5,
+            "RL_calf_joint": -2.2,
+            "RR_calf_joint": -2.2,
+        },
         "joint_names": [
             "FR_hip_joint",
             "FR_thigh_joint",
@@ -129,24 +144,24 @@ def get_cfgs():
         "base_height_target": 0.3,
         "feet_height_target": 0.075,
         "reward_scales": {
-            "tracking_lin_vel": 0,#1.0,
-            "tracking_ang_vel": 0,#0.2,
-            "lin_vel_z": 0,#-1.0,
+            "tracking_lin_vel": 1.0,
+            "tracking_ang_vel": 0.2,
+            "lin_vel_z": -1.0,
             "base_height": -50.0,
-            "action_rate": 0,#-0.005,
-            "similar_to_default": 0,#-0.1,
-            # "base_pitch": -0.0000001,
+            "action_rate": -0.005,
+            "similar_to_default": -0.1,
+            # "base_pitch": -0.001,
             # "base_pitch": 0,
-            "base_pitch": -10,
+            # "base_pitch": -50,
         },
     }
     command_cfg = {
         "num_commands": 4,
-        "lin_vel_x_range": [0.5, 0.5],
-        "lin_vel_y_range": [0, 0],
-        "ang_vel_range": [0, 0],
-        "base_pitch_range": [-0.15, -0.15], # (-20, 20) / 180 * pi
-        # "base_pitch_range": [-0.174, 0.523], # (-10, 30) / 180 * pi
+        "lin_vel_x_range": [-0.5, 0.5],
+        "lin_vel_y_range": [-0.5, 0.5],
+        "ang_vel_range": [-1., 1.],
+        "base_pitch_range": [0, 1],
+        # "base_pitch_range": np.array([-15, -15]) / 180 * np.pi,
     }
 
     return env_cfg, obs_cfg, reward_cfg, command_cfg
@@ -156,7 +171,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-e", "--exp_name", type=str, default="go2-lookup-walking")
     parser.add_argument("-B", "--num_envs", type=int, default=4096)
-    parser.add_argument("--max_iterations", type=int, default=100000)
+    parser.add_argument("--max_iterations", type=int, default=10000)
     args = parser.parse_args()
 
     gs.init(logging_level="warning")

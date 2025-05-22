@@ -109,6 +109,11 @@ class Go2Env:
             device=gs.device,
             dtype=gs.tc_float,
         )
+        self.lookup_dof_pos = torch.tensor(
+            [self.env_cfg["lookup_joint_angles"][name] for name in self.env_cfg["joint_names"]],
+            device=gs.device,
+            dtype=gs.tc_float,
+        )
         self.extras = dict()  # extra information for logging
         self.extras["observations"] = dict()
 
@@ -151,7 +156,7 @@ class Go2Env:
 
         # check termination and reset
         self.reset_buf = self.episode_length_buf > self.max_episode_length
-        self.reset_buf |= torch.abs(self.base_euler[:, 1]) > self.env_cfg["termination_if_pitch_greater_than"]
+        self.reset_buf |= self.base_euler[:, 1] > self.env_cfg["termination_if_pitch_greater_than"]
         self.reset_buf |= torch.abs(self.base_euler[:, 0]) > self.env_cfg["termination_if_roll_greater_than"]
 
         time_out_idx = (self.episode_length_buf > self.max_episode_length).nonzero(as_tuple=False).flatten()
@@ -179,8 +184,7 @@ class Go2Env:
             ],
             axis=-1,
         )
-
-        print(torch.sin(self.commands[0, 3]), '=======', self.projected_gravity[0, 0], '======', self.base_euler[0, 1])
+        # print(torch.sin(self.commands[0, 3]), '=======', self.projected_gravity[0, 0], '======', self.base_euler[0, 1])
 
         self.last_actions[:] = self.actions[:]
         self.last_dof_vel[:] = self.dof_vel[:]
@@ -261,13 +265,21 @@ class Go2Env:
 
     def _reward_similar_to_default(self):
         # Penalize joint poses far away from default pose
-        return torch.sum(torch.abs(self.dof_pos - self.default_dof_pos), dim=1)
+        aa = self.commands[:, 3:4].repeat(1, self.dof_pos.size(1))
+        default_dof_pos = self.default_dof_pos.unsqueeze(0).repeat(aa.size(0), 1)
+        lookup_dof_pos = self.lookup_dof_pos.unsqueeze(0).repeat(aa.size(0), 1)
+        required_dof_pos = aa * default_dof_pos + (1 - aa) * lookup_dof_pos
+        return torch.sum(torch.abs(self.dof_pos - required_dof_pos), dim=1)
+
+    # def _reward_similar_to_default(self):
+    #     # Penalize joint poses far away from default pose
+    #     return torch.sum(torch.abs(self.dof_pos - self.default_dof_pos), dim=1)
 
     def _reward_base_height(self):
         # Penalize base height away from target
         return torch.square(self.base_pos[:, 2] - self.reward_cfg["base_height_target"])
 
-    def _reward_base_pitch(self):
-        # Penalize the difference between base pitch orientation with the command
-        print(torch.sin(self.commands[0, 3]), '=======', self.projected_gravity[0, 0], '======', self.base_euler[0, 1])
-        return torch.sum(torch.square(torch.sin(self.commands[:, 3]) - self.projected_gravity[:, 0]))
+    # def _reward_base_pitch(self):
+    #     # Penalize the base pitch away from the command
+    #     # print(torch.sin(self.commands[0, 3]), '=======', self.projected_gravity[0, 0], '======', self.base_euler[0, 1])
+    #     return torch.sum(torch.square(torch.sin(self.commands[:, 3]) - self.projected_gravity[:, 0]))
