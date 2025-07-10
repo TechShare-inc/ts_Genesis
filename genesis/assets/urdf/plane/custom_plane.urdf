@@ -27,6 +27,33 @@
       </geometry>
     </collision>
   </link>
+
+  <link name="box_super_inner_top">
+    <visual><origin xyz="0 0.4 0.05"/><geometry><box size="1.0 0.2 0.1"/></geometry></visual>
+    <collision><origin xyz="0 0.4 0.05"/><geometry><box size="1.0 0.2 0.1"/></geometry></collision>
+  </link>
+  <joint name="joint_super_inner_top" type="fixed"><parent link="planeLink"/><child link="box_super_inner_top"/><origin xyz="0 0 0"/></joint>
+
+  <link name="box_super_inner_bottom">
+    <visual><origin xyz="0 -0.4 0.05"/><geometry><box size="1.0 0.2 0.1"/></geometry></visual>
+    <collision><origin xyz="0 -0.4 0.05"/><geometry><box size="1.0 0.2 0.1"/></geometry></collision>
+  </link>
+  <joint name="joint_super_inner_bottom" type="fixed"><parent link="planeLink"/><child link="box_super_inner_bottom"/><origin xyz="0 0 0"/></joint>
+
+  <link name="box_super_inner_left">
+    <visual><origin xyz="-0.5 0 0.05"/><geometry><box size="0.2 1.0 0.1"/></geometry></visual>
+    <collision><origin xyz="-0.5 0 0.05"/><geometry><box size="0.2 1.0 0.1"/></geometry></collision>
+  </link>
+  <joint name="joint_super_inner_left" type="fixed"><parent link="planeLink"/><child link="box_super_inner_left"/><origin xyz="0 0 0"/></joint>
+
+  <link name="box_super_inner_right">
+    <visual><origin xyz="0.6 0 0.05"/><geometry><box size="0.2 1.0 0.1"/></geometry></visual>
+    <collision><origin xyz="0.6 0 0.05"/><geometry><box size="0.2 1.0 0.1"/></geometry></collision>
+  </link>
+  <joint name="joint_super_inner_right" type="fixed"><parent link="planeLink"/><child link="box_super_inner_right"/><origin xyz="0 0 0"/></joint>
+
+
+
   <!-- Inner Rectangle (2m) -->
   <link name="box_inner1_top">
     <visual><origin xyz="0 2.0 0.025"/><geometry><box size="4.0 0.2 0.05"/></geometry></visual>
