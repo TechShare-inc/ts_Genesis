@@ -111,10 +111,11 @@ def parse_terrain(morph: Terrain, surface):
                     elif subterrain_type == "discrete_obstacles_terrain":
                         subterrain_height_field = isaacgym_terrain_utils.discrete_obstacles_terrain(
                             new_subterrain,
-                            max_height=params.get("max_height", 0.05),
-                            min_size=params.get("min_size", 1.0),
-                            max_size=params.get("max_size", 5.0),
-                            num_rects=params.get("num_rects", 20),
+                            slope=params.get("slope", 0.05),
+                            pit_size_m=params.get("pit_size_m", 1.0),
+                            pit_gap_m=params.get("pit_gap_m", 0.4),
+                            pit_depth_m=params.get("pit_depth_m", 0.2),
+                            platform_size_m=params.get("platform_size_m", 0.5),
                         ).height_field_raw
 
                     elif subterrain_type == "wave_terrain":

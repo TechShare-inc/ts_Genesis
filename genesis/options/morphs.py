@@ -1016,10 +1016,11 @@ class Terrain(Morph):
                 "slope": -0.1,
             },
             "discrete_obstacles_terrain": {
-                "max_height": 0.05,
-                "min_size": 1.0,
-                "max_size": 5.0,
-                "num_rects": 20,
+                "slope": 0.05,
+                "pit_size_m": 0.2,
+                "pit_gap_m": 0.4,
+                "pit_depth_m": 0.2,
+                "platform_size_m":0.5,
             },
             "wave_terrain": {
                 "num_waves": 2.0,
@@ -1039,6 +1040,13 @@ class Terrain(Morph):
                 "max_height": 0.2,
                 "platform_size": 0.0,
             },
+            "stamble_terrain": {},
+            "blocky_terrain": {},
+            "debug_terrain": {},
+            "pyramid_down_sloped_terrain": {},
+            "pyramid_down_stairs_terrain": {},
+            "pyramid_shallow_down_stairs_terrain":{},
+            "pyramid_steep_down_stairs_terrain": {},
         }
 
     @property
