@@ -888,7 +888,7 @@ class Terrain(Morph):
     subterrain_types: Any = [
         ["flat_terrain", "random_uniform_terrain", "stepping_stones_terrain", "stamble_terrain", "blocky_terrain"],
         ["pyramid_sloped_terrain","pyramid_down_sloped_terrain", "discrete_obstacles_terrain", "wave_terrain"],
-        ["random_uniform_terrain", "pyramid_stairs_terrain", "pyramid_down_stairs_terrain", "pyramid_steep_down_stairs_terrain", "sloped_terrain"],
+        ["random_uniform_terrain", "pyramid_stairs_terrain", "pyramid_down_stairs_terrain", "pyramid_shallow_down_stairs_terrain",  "pyramid_steep_down_stairs_terrain", "sloped_terrain"],
     ]
     height_field: Any = None
     name: str = "default"  # name to store and reuse the terrain
@@ -910,6 +910,7 @@ class Terrain(Morph):
             "pyramid_stairs_terrain",
             "pyramid_down_stairs_terrain",
             "pyramid_steep_down_stairs_terrain",
+            "pyramid_shallow_down_stairs_terrain",
             "stepping_stones_terrain",
             "stamble_terrain",
             "blocky_terrain",

@@ -27,7 +27,6 @@ class OnPolicyRunner:
         self.policy_cfg = train_cfg["policy"]
         self.device = device
         self.env = env
-
         # resolve dimensions of observations
         obs, extras = self.env.get_observations()
         num_obs = obs.shape[1]
@@ -214,9 +213,10 @@ class OnPolicyRunner:
             # Logging info and save checkpoint
             if self.log_dir is not None:
                 # Log information
+                rel_it = it - resume_base_iter
+                self.env.current_iteration = rel_it
                 self.log(locals())
                 # Save model
-                rel_it = it - resume_base_iter
                 if rel_it % self.save_interval == 0:
                     self.save(os.path.join(self.log_dir, f"model_{it}.pt"))
 
@@ -256,7 +256,6 @@ class OnPolicyRunner:
         self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
         self.tot_time += locs["collection_time"] + locs["learn_time"]
         iteration_time = locs["collection_time"] + locs["learn_time"]
-
         # -- Episode info
         ep_string = ""
         if locs["ep_infos"]:
@@ -316,8 +315,13 @@ class OnPolicyRunner:
                     "Train/mean_episode_length/time", statistics.mean(locs["lenbuffer"]), self.tot_time
                 )
 
-        str = f" \033[1m Learning iteration {locs['it']}/{locs['tot_iter']} \033[0m "
-
+        if self.env.curriculum_complete_flag:
+            color_start = "\033[92m"  # Green
+            color_end = "\033[0m"     # Reset
+        else :
+            color_start = ""
+            color_end = ""
+        str = f" {color_start} Learning iteration {locs['it']}/{locs['tot_iter']} {color_end} "
         if len(locs["rewbuffer"]) > 0:
             log_string = (
                 f"""{'#' * width}\n"""
@@ -340,11 +344,19 @@ class OnPolicyRunner:
                     f"""{'Mean extrinsic reward:':>{pad}} {statistics.mean(locs['erewbuffer']):.2f}\n"""
                     f"""{'Mean intrinsic reward:':>{pad}} {statistics.mean(locs['irewbuffer']):.2f}\n"""
                 )
-
-            log_string += f"""{'Mean total reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
+            if self.env.mean_reward_flag:
+                color_start = "\033[92m"  # Green
+                color_end = "\033[0m"     # Reset
+            elif self.env.mean_reward_half_flag:
+                color_start = "\033[93m"
+                color_end = "\033[0m"
+            else :
+                color_start = ""
+                color_end = ""
+            mean_reward = statistics.mean(locs['rewbuffer'])
+            self.env.mean_reward = mean_reward
+            log_string += f"""{'Mean total reward:':>{pad}} {color_start}{mean_reward:.2f}{color_end}\n"""
             log_string += f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n"""
-            #   f"""{'Mean reward/step:':>{pad}} {locs['mean_reward']:.2f}\n"""
-            #   f"""{'Mean episode length/episode:':>{pad}} {locs['mean_trajectory_length']:.2f}\n""")
         else:
             log_string = (
                 f"""{'#' * width}\n"""
