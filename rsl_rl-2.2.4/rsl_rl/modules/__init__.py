@@ -7,7 +7,8 @@
 
 from .actor_critic import ActorCritic
 from .actor_critic_recurrent import ActorCriticRecurrent
+from .inference_actor_lstm import InferenceActorLSTM, InferenceActorLSTMWrapper
 from .normalizer import EmpiricalNormalization
 from .rnd import RandomNetworkDistillation
 
-__all__ = ["ActorCritic", "ActorCriticRecurrent", "EmpiricalNormalization", "RandomNetworkDistillation"]
+__all__ = ["ActorCritic", "ActorCriticRecurrent", "InferenceActorLSTM", "InferenceActorLSTMWrapper", "EmpiricalNormalization", "RandomNetworkDistillation"]
