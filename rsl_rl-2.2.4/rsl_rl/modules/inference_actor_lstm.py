@@ -39,18 +39,30 @@ class InferenceActorLSTMWrapper(nn.Module):
         self.num_envs = num_envs
         self.rnn_hidden_size = rnn_hidden_size
 
-    @torch.jit.export
-    def init_hidden(self, device: torch.device):
-        """LSTM 初期状態を生成"""
-        hx = torch.zeros(1, self.num_envs, self.rnn_hidden_size, device=device)
-        cx = torch.zeros(1, self.num_envs, self.rnn_hidden_size, device=device)
-        return hx, cx
+        # buffer に hidden state を登録（初期は None）
+        self.register_buffer("hx", torch.zeros(1, num_envs, rnn_hidden_size))
+        self.register_buffer("cx", torch.zeros(1, num_envs, rnn_hidden_size))
 
-    def forward(self, obs: torch.Tensor, hx: torch.Tensor, cx: torch.Tensor):
-        """
-        TorchScript 用 forward。
-        obs: [num_envs, obs_dim]
-        hx, cx: [1, num_envs, hidden_size]
-        """
+    def _init_hidden(self, device: torch.device):
+        """内部で自動初期化"""
+        self.hx.zero_().to(device)
+        self.cx.zero_().to(device)
+
+    def forward(self, obs: torch.Tensor):
+        device = obs.device
+        # デバイスを合わせる（obs が CPU の場合にも対応）
+        hx = self.hx.to(device)
+        cx = self.cx.to(device)
+
         action, new_h, new_c = self.inference_actor(obs, hx, cx)
-        return action, new_h, new_c
+
+        # detach & 値を更新
+        self.hx = new_h.detach()
+        self.cx = new_c.detach()
+
+        return action
+
+    @torch.jit.export
+    def reset(self, device: torch.device):
+        self.hx.zero_().to(device)
+        self.cx.zero_().to(device)
