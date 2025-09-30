@@ -6,5 +6,6 @@
 """Implementation of different RL agents."""
 
 from .ppo import PPO
+from .him_ppo import HIMPPO
 
-__all__ = ["PPO"]
+__all__ = ["PPO", "HIMPPO"]
