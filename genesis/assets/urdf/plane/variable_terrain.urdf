@@ -1,0 +1,32 @@
+<?xml version="1.0" ?>
+<robot name="variable_terrain">
+
+  <link name="terrain_link">
+
+    <!-- 摩擦設定 -->
+    <contact>
+      <lateral_friction value="0.8"/>  <!-- 横摩擦 -->
+      <rolling_friction value="0.0"/>  <!-- 必要なら追加 -->
+      <spinning_friction value="0.0"/>
+    </contact>
+
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="variable_sdf_tmesh.stl" scale="1 1 1"/>
+      </geometry>
+      <material name="gray">
+        <color rgba="0.7 0.7 0.7 1"/>
+      </material>
+    </visual>
+
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="variable_sdf_tmesh.stl" scale="1 1 1"/>
+      </geometry>
+    </collision>
+
+  </link>
+
+</robot>
