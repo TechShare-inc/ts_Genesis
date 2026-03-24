@@ -108,10 +108,10 @@ def parse_terrain(morph: Terrain, surface):
                     elif subterrain_type == "discrete_obstacles_terrain":
                         subterrain_height_field = isaacgym_terrain_utils.discrete_obstacles_terrain(
                             new_subterrain,
-                            slope=-0.2,
-                            pit_size_m=0.2,
-                            pit_gap_m=0.4,
-                            pit_depth_m=0.2,
+                            slope=-0.0,
+                            pit_size_m=0.4,
+                            pit_gap_m=0.8,
+                            pit_depth_m=-0.01,
                             platform_size_m=0.0, 
                         ).height_field_raw
 
