@@ -1,4 +1,4 @@
-import taichi as ti
+import quadrants as qd
 
 import genesis as gs
 from genesis.engine.states.entities import SPHEntityState
@@ -6,7 +6,7 @@ from genesis.engine.states.entities import SPHEntityState
 from .particle_entity import ParticleEntity
 
 
-@ti.data_oriented
+@qd.data_oriented
 class SPHEntity(ParticleEntity):
     """
     SPH-based particle entity.
@@ -31,9 +31,11 @@ class SPHEntity(ParticleEntity):
         Start index for the particles belonging to this entity.
     """
 
-    def __init__(self, scene, solver, material, morph, surface, particle_size, idx, particle_start):
+    def __init__(
+        self, scene, solver, material, morph, surface, particle_size, idx, particle_start, name: str | None = None
+    ):
         super().__init__(
-            scene, solver, material, morph, surface, particle_size, idx, particle_start, need_skinning=False
+            scene, solver, material, morph, surface, particle_size, idx, particle_start, need_skinning=False, name=name
         )
 
     def init_sampler(self):
@@ -47,26 +49,23 @@ class SPHEntity(ParticleEntity):
         """
         self.sampler = self._material.sampler
 
-        valid = True
-        if self.sampler == "regular":
-            pass
-        elif "pbs" in self.sampler:
-            splits = self.sampler.split("-")
-            if len(splits) == 1:  # using default sdf_res=32
-                self.sampler += "-32"
-            elif len(splits) == 2 and splits[0] == "pbs" and splits[1].isnumeric():
+        match self.sampler.split("-"):
+            case ["regular"]:
                 pass
-            else:
-                valid = False
-        else:
-            valid = False
+            case ["random"]:
+                pass
+            case ["pbs"]:
+                # using default sdf_res=32
+                self.sampler += "-32"
+            case ["pbs", num] if num.isnumeric():
+                pass
+            case _:
+                gs.raise_exception(
+                    "Only one of the following samplers is supported: [`regular`, `random`, `pbs`, `pbs-sdf_res`]. "
+                    f"Got: {self.sampler}."
+                )
 
-        if not valid:
-            gs.raise_exception(
-                f"Only one of the following samplers is supported: [`regular`, `pbs`, `pbs-sdf_res`]. Got: {self.sampler}."
-            )
-
-    def _add_to_solver_(self):
+    def _add_particles_to_solver(self):
         self._solver._kernel_add_particles(
             self._sim.cur_substep_local,
             self.active,
@@ -80,106 +79,26 @@ class SPHEntity(ParticleEntity):
             self._particles,
         )
 
-    @gs.assert_built
-    def set_pos(self, f, pos):
+    def _reset_grad(self):
+        pass
+
+    def add_grad_from_state(self, state):
         """
-        Set particle positions for the specified frame.
+        Apply gradients from a given state.
 
         Parameters
         ----------
-        f : int
-            Frame index.
-        pos : ndarray
-            Array of particle positions of shape (n_envs, n_particles, 3).
-        """
-        self.solver._kernel_set_particles_pos(
-            f,
-            self._particle_start,
-            self._n_particles,
-            pos,
-        )
-
-    def set_pos_grad(self, f: ti.i32, pos_grad: ti.types.ndarray()):
-        """
-        Set gradient of particle positions.
-
-        Parameters
-        ----------
-        f : int
-            Frame index.
-        pos_grad : ndarray
-            Gradient array for positions.
+        state : SPHEntityState
+            The state from which to compute gradients.
         """
         pass
 
-    @gs.assert_built
-    def set_vel(self, f, vel):
-        """
-        Set particle velocities for the specified frame.
-
-        Parameters
-        ----------
-        f : int
-            Frame index.
-        vel : ndarray
-            Array of particle velocities of shape (n_envs, n_particles, 3).
-        """
-        self.solver._kernel_set_particles_vel(
-            f,
-            self._particle_start,
-            self._n_particles,
-            vel,
-        )
-
-    def set_vel_grad(self, f: ti.i32, vel_grad: ti.types.ndarray()):
-        """
-        Set gradient of particle velocities.
-
-        Parameters
-        ----------
-        f : int
-            Frame index.
-        vel_grad : ndarray
-            Gradient array for velocities.
-        """
-        pass
-
-    @gs.assert_built
-    def set_active(self, f, active):
-        """
-        Set the active status of particles for a given frame.
-
-        Parameters
-        ----------
-        f : int
-            Frame index.
-        active : ndarray
-            Boolean array indicating whether each particle is active.
-        """
-        self.solver._kernel_set_particles_active(
-            f,
-            self._particle_start,
-            self._n_particles,
-            active,
-        )
-
-    def clear_grad(self, f: ti.i32):
-        """
-        Placeholder to clear gradients for the specified frame (not yet implemented).
-
-        Parameters
-        ----------
-        f : int
-            Frame index.
-        """
-        pass
-
-    @ti.kernel
+    @qd.kernel
     def get_frame(
         self,
-        f: ti.i32,
-        pos: ti.types.ndarray(),
-        vel: ti.types.ndarray(),
+        f: qd.i32,
+        pos: qd.types.ndarray(),
+        vel: qd.types.ndarray(),
     ):
         """
         Retrieve particle positions and velocities for the given frame.
@@ -193,28 +112,11 @@ class SPHEntity(ParticleEntity):
         vel : ndarray
             Output array for velocities (n_envs, n_particles, 3).
         """
-        for i_p, i_b in ti.ndrange(self.n_particles, self._sim._B):
-            i_global = i_p + self._particle_start
-            for j in ti.static(range(3)):
-                pos[i_b, i_p, j] = self.solver.particles[i_global, i_b].pos[j]
-                vel[i_b, i_p, j] = self.solver.particles[i_global, i_b].vel[j]
-
-    def add_grad_from_state(self, state):
-        """
-        Apply gradients from a given state.
-
-        Parameters
-        ----------
-        state : SPHEntityState
-            The state from which to compute gradients.
-        """
-        pass
-
-    @ti.kernel
-    def _kernel_get_particles(self, particles: ti.types.ndarray()):
-        for i_p, i_b in ti.ndrange(self.n_particles, self._sim._B):
-            for j in ti.static(range(3)):
-                particles[i_b, i_p, j] = self.solver.particles[i_p + self._particle_start, i_b].pos[j]
+        for i_p_, i_b in qd.ndrange(self.n_particles, self._sim._B):
+            i_p = i_p_ + self._particle_start
+            for j in qd.static(range(3)):
+                pos[i_b, i_p_, j] = self.solver.particles[i_p, i_b].pos[j]
+                vel[i_b, i_p_, j] = self.solver.particles[i_p, i_b].vel[j]
 
     @gs.assert_built
     def get_state(self):
@@ -234,10 +136,64 @@ class SPHEntity(ParticleEntity):
 
         return state
 
-    @ti.kernel
-    def _kernel_get_mass(self, mass: ti.types.ndarray()):
-        total_mass = 0.0
-        for i in range(self.n_particles):
-            i_global = i + self._particle_start
-            total_mass += self._solver.particles[i_global, 0].m
-        mass[0] = total_mass
+    # ------------------------------------------------------------------------------------
+    # ---------------------------------- io & control ------------------------------------
+    # ------------------------------------------------------------------------------------
+
+    @gs.assert_built
+    def set_particles_pos(self, poss, particles_idx_local=None, envs_idx=None):
+        envs_idx = self._scene._sanitize_envs_idx(envs_idx)
+        particles_idx_local = self._sanitize_particles_idx_local(particles_idx_local, envs_idx)
+        particles_idx = particles_idx_local + self._particle_start
+        poss = self._sanitize_particles_tensor(poss, gs.tc_float, particles_idx, envs_idx, (3,))
+        self.solver._kernel_set_particles_pos(particles_idx, envs_idx, poss)
+
+    def get_particles_pos(self, envs_idx=None):
+        envs_idx = self._scene._sanitize_envs_idx(envs_idx)
+        poss = self._sanitize_particles_tensor(None, gs.tc_float, None, envs_idx, (3,))
+        self.solver._kernel_get_particles_pos(self._particle_start, self.n_particles, envs_idx, poss)
+        if self._scene.n_envs == 0:
+            poss = poss[0]
+        return poss
+
+    def get_position(self, envs_idx=None):
+        return self.get_particles_pos(envs_idx)
+
+    @gs.assert_built
+    def set_particles_vel(self, vels, particles_idx_local=None, envs_idx=None):
+        envs_idx = self._scene._sanitize_envs_idx(envs_idx)
+        particles_idx_local = self._sanitize_particles_idx_local(particles_idx_local, envs_idx)
+        particles_idx = particles_idx_local + self._particle_start
+        vels = self._sanitize_particles_tensor(vels, gs.tc_float, particles_idx, envs_idx, (3,))
+        self.solver._kernel_set_particles_vel(particles_idx, envs_idx, vels)
+
+    def get_particles_vel(self, envs_idx=None):
+        envs_idx = self._scene._sanitize_envs_idx(envs_idx)
+        vels = self._sanitize_particles_tensor(None, gs.tc_float, None, envs_idx, (3,))
+        self.solver._kernel_get_particles_vel(self._particle_start, self.n_particles, envs_idx, vels)
+        if self._scene.n_envs == 0:
+            vels = vels[0]
+        return vels
+
+    @gs.assert_built
+    def set_particles_active(self, actives, particles_idx_local=None, envs_idx=None):
+        envs_idx = self._scene._sanitize_envs_idx(envs_idx)
+        particles_idx_local = self._sanitize_particles_idx_local(particles_idx_local, envs_idx)
+        particles_idx = particles_idx_local + self._particle_start
+        actives = self._sanitize_particles_tensor(actives, gs.tc_bool, particles_idx, envs_idx)
+        self.solver._kernel_set_particles_active(particles_idx, envs_idx, actives)
+
+    def get_particles_active(self, envs_idx=None):
+        envs_idx = self._scene._sanitize_envs_idx(envs_idx)
+        actives = self._sanitize_particles_tensor(None, gs.tc_bool, None, envs_idx)
+        self.solver._kernel_get_particles_active(self._particle_start, self.n_particles, envs_idx, actives)
+        if self._scene.n_envs == 0:
+            actives = actives[0]
+        return actives
+
+    # ------------------------------------------------------------------------------------
+    # --------------------------------- naming methods -----------------------------------
+    # ------------------------------------------------------------------------------------
+
+    def _get_morph_identifier(self) -> str:
+        return f"sph_{super()._get_morph_identifier()}"

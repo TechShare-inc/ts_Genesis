@@ -1,4 +1,5 @@
 import argparse
+import os
 
 from huggingface_hub import snapshot_download
 
@@ -12,12 +13,12 @@ def main():
     args = parser.parse_args()
 
     ########################## init ##########################
-    gs.init(backend=gs.cpu if args.cpu else gs.gpu, precision="64" if args.cpu else "32", seed=0)
+    gs.init(backend=gs.cpu if args.cpu else gs.gpu, precision="32", seed=0)
 
     ########################## create a scene ##########################
     scene = gs.Scene(
         rigid_options=gs.options.RigidOptions(
-            dt=0.004,
+            dt=0.01,
         ),
         show_viewer=args.vis,
         show_FPS=False,
@@ -37,7 +38,11 @@ def main():
     )
     for i, asset_name in enumerate(("donut_0", "mug_1", "cup_2", "apple_15")):
         asset_path = snapshot_download(
-            repo_type="dataset", repo_id="Genesis-Intelligence/assets", allow_patterns=f"{asset_name}/*"
+            repo_type="dataset",
+            repo_id="Genesis-Intelligence/assets",
+            revision="4d96c3512df4421d4dd3d626055d0d1ebdfdd7cc",
+            allow_patterns=f"{asset_name}/*",
+            max_workers=1,
         )
         scene.add_entity(
             gs.morphs.MJCF(
@@ -50,7 +55,8 @@ def main():
 
     ########################## build ##########################
     scene.build()
-    for i in range(2000):
+    horizon = 2000 if "PYTEST_VERSION" not in os.environ else 5
+    for i in range(horizon):
         scene.step()
 
 

@@ -1,11 +1,7 @@
-import numpy as np
-import taichi as ti
-
-from ..base import Material
+from ..base import EntityT, Material
 
 
-@ti.data_oriented
-class Base(Material):
+class Base(Material[EntityT]):
     """
     The base class of PBD materials.
 
@@ -13,6 +9,3 @@ class Base(Material):
     ----
     This class should *not* be instantiated directly.
     """
-
-    def __init__(self):
-        super().__init__()

@@ -1,23 +1,29 @@
-import genesis as gs
 import math
-from quadcopter_controller import DronePIDController
-from genesis.engine.entities.drone_entity import DroneEntity
+from typing import TYPE_CHECKING
+
+import genesis as gs
 from genesis.vis.camera import Camera
+
+from quadcopter_controller import DronePIDController
+
+if TYPE_CHECKING:
+    from genesis.engine.entities.drone_entity import DroneEntity
+
 
 base_rpm = 14468.429183500699
 min_rpm = 0.9 * base_rpm
 max_rpm = 1.5 * base_rpm
 
 
-def hover(drone: DroneEntity):
-    drone.set_propellels_rpm([base_rpm, base_rpm, base_rpm, base_rpm])
+def hover(drone: "DroneEntity"):
+    drone.set_propellers_rpm([base_rpm, base_rpm, base_rpm, base_rpm])
 
 
 def clamp(rpm):
     return max(min_rpm, min(int(rpm), max_rpm))
 
 
-def fly_to_point(target, controller: DronePIDController, scene: gs.Scene, cam: Camera):
+def fly_to_point(target, controller: "DronePIDController", scene: gs.Scene, cam: Camera):
     drone = controller.drone
     step = 0
     x = target[0] - drone.get_pos()[0]
@@ -32,7 +38,7 @@ def fly_to_point(target, controller: DronePIDController, scene: gs.Scene, cam: C
         M2 = clamp(M2)
         M3 = clamp(M3)
         M4 = clamp(M4)
-        drone.set_propellels_rpm([M1, M2, M3, M4])
+        drone.set_propellers_rpm([M1, M2, M3, M4])
         scene.step()
         cam.render()
         # print("point =", drone.get_pos())
@@ -43,8 +49,8 @@ def fly_to_point(target, controller: DronePIDController, scene: gs.Scene, cam: C
         z = drone_pos[2]
         cam.set_pose(lookat=(x, y, z))
         x = target[0] - x
-        y = target[0] - y
-        z = target[0] - z
+        y = target[1] - y
+        z = target[2] - z
         distance = math.sqrt(x**2 + y**2 + z**2)
         step += 1
 

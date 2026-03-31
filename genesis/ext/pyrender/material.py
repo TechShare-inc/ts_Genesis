@@ -6,7 +6,6 @@ https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_mate
 Author: Matthew Matl
 """
 
-import abc
 from abc import ABCMeta
 
 import numpy as np
@@ -89,7 +88,6 @@ class Material(metaclass=ABCMeta):
         smooth=True,
         wireframe=False,
     ):
-
         # Set defaults
         if alphaMode is None:
             alphaMode = "OPAQUE"
@@ -98,7 +96,7 @@ class Material(metaclass=ABCMeta):
             alphaCutoff = 0.5
 
         if emissiveFactor is None:
-            emissiveFactor = np.zeros(3).astype(np.float32)
+            emissiveFactor = np.zeros((3,), dtype=np.float32)
 
         self.name = name
         self.normalTexture = normalTexture
@@ -377,7 +375,7 @@ class MetallicRoughnessMaterial(Material):
         roughnessFactor=1.0,
         metallicRoughnessTexture=None,
     ):
-        super(MetallicRoughnessMaterial, self).__init__(
+        super().__init__(
             name=name,
             normalTexture=normalTexture,
             occlusionTexture=occlusionTexture,
@@ -392,7 +390,7 @@ class MetallicRoughnessMaterial(Material):
 
         # Set defaults
         if baseColorFactor is None:
-            baseColorFactor = np.ones(4).astype(np.float32)
+            baseColorFactor = np.ones((4,), dtype=np.float32)
 
         self.baseColorFactor = baseColorFactor
         self.baseColorTexture = baseColorTexture
@@ -586,7 +584,7 @@ class SpecularGlossinessMaterial(Material):
         glossinessFactor=1.0,
         specularGlossinessTexture=None,
     ):
-        super(SpecularGlossinessMaterial, self).__init__(
+        super().__init__(
             name=name,
             normalTexture=normalTexture,
             occlusionTexture=occlusionTexture,
@@ -601,9 +599,9 @@ class SpecularGlossinessMaterial(Material):
 
         # Set defaults
         if diffuseFactor is None:
-            diffuseFactor = np.ones(4).astype(np.float32)
+            diffuseFactor = np.ones((4,), dtype=np.float32)
         if specularFactor is None:
-            specularFactor = np.ones(3).astype(np.float32)
+            specularFactor = np.ones((3,), dtype=np.float32)
 
         self.diffuseFactor = diffuseFactor
         self.diffuseTexture = diffuseTexture

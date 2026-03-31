@@ -1,15 +1,16 @@
+import ctypes
 import os
 import pickle as pkl
+import platform
 import subprocess
 import sys
 import shutil
 import tempfile
+from multiprocessing import Process, Queue
 
 import igl
 import numpy as np
 import trimesh
-import vtk
-from vtk.util.numpy_support import vtk_to_numpy
 
 import genesis as gs
 
@@ -21,6 +22,11 @@ from . import misc as miu
 LD_LIBRARY_PATH = os.path.join(miu.get_src_dir(), "ext/ParticleMesher/ParticleMesherPy")
 sys.path.append(LD_LIBRARY_PATH)
 os.environ["LD_LIBRARY_PATH"] = ":".join(filter(None, (os.environ.get("LD_LIBRARY_PATH"), LD_LIBRARY_PATH)))
+
+try:
+    malloc_trim = ctypes.CDLL(ctypes.util.find_library("c")).malloc_trim
+except (AttributeError, TypeError):
+    malloc_trim = None
 
 
 def n_particles_vol(p_size=0.01, volume=1.0):
@@ -36,8 +42,7 @@ def n_particles_1D(p_size=0.01, length=1.0):
 
 
 def nowhere_particles(n):
-    positions = np.tile(gu.nowhere(), [n, 1])
-    return positions
+    return np.tile(gu.nowhere(), (n, 1))
 
 
 def trimesh_to_particles_simple(mesh, p_size, sampler):
@@ -57,7 +62,7 @@ def trimesh_to_particles_simple(mesh, p_size, sampler):
             with open(ptc_file_path, "rb") as file:
                 positions = pkl.load(file)
             is_cached_loaded = True
-        except (EOFError, ModuleNotFoundError, pkl.UnpicklingError):
+        except (EOFError, ModuleNotFoundError, pkl.UnpicklingError, TypeError, MemoryError):
             gs.logger.info("Ignoring corrupted cache.")
 
     if not is_cached_loaded:
@@ -68,7 +73,7 @@ def trimesh_to_particles_simple(mesh, p_size, sampler):
             positions = _box_to_particles(p_size=p_size, pos=box_center, size=box_size, sampler=sampler)
             # reject out-of-boundary particles
             sd, *_ = igl.signed_distance(positions, mesh.vertices, mesh.faces)
-            positions = positions[sd < 0]
+            positions = positions[sd < 0.0]
 
             os.makedirs(os.path.dirname(ptc_file_path), exist_ok=True)
             with open(ptc_file_path, "wb") as file:
@@ -80,13 +85,13 @@ def trimesh_to_particles_simple(mesh, p_size, sampler):
 def trimesh_to_particles_pbs(mesh, p_size, sampler, pos=(0, 0, 0)):
     """
     Physics-based particle sampler using the method proposed by Kugelstadt et al. [2021].
+
     References: https://splishsplash.readthedocs.io/en/latest/VolumeSampling.html
-    If this sampler fails, it returns `None`.
     """
     assert "pbs" in sampler
 
-    if gs.platform != "Linux":
-        gs.raise_exception("This method is only supported on Linux.")
+    if not (sys.platform == "linux" and platform.machine() == "x86_64"):
+        gs.raise_exception(f"Physics-based particle sampler '{sampler}' is only supported on Linux x86.")
 
     # compute file name via hashing for caching
     ptc_file_path = msu.get_ptc_path(mesh.vertices, mesh.faces, p_size, sampler)
@@ -99,7 +104,7 @@ def trimesh_to_particles_pbs(mesh, p_size, sampler, pos=(0, 0, 0)):
             with open(ptc_file_path, "rb") as file:
                 positions = pkl.load(file)
             is_cached_loaded = True
-        except (EOFError, ModuleNotFoundError, pkl.UnpicklingError):
+        except (EOFError, ModuleNotFoundError, pkl.UnpicklingError, TypeError, MemoryError):
             gs.logger.info("Ignoring corrupted cache.")
 
     if not is_cached_loaded:
@@ -117,6 +122,10 @@ def trimesh_to_particles_pbs(mesh, p_size, sampler, pos=(0, 0, 0)):
             mesh.export(mesh_path)
 
             try:
+                # Try importing VTK. It would fail on Linux if not graphic server is running.
+                import vtk
+                from vtk.util.numpy_support import vtk_to_numpy
+
                 # Sample particles
                 command = (
                     os.path.join(miu.get_src_dir(), "ext/VolumeSampling"),
@@ -147,8 +156,8 @@ def trimesh_to_particles_pbs(mesh, p_size, sampler, pos=(0, 0, 0)):
                 reader.SetFileName(vtk_path)
                 reader.Update()
                 positions = vtk_to_numpy(reader.GetOutput().GetPoints().GetData())
-            except OSError as e:
-                gs.raise_exception_from("`pbs` sampler failed.", e)
+            except (OSError, ImportError) as e:
+                gs.raise_exception_from(f"Physics-based particle sampler '{sampler}' failed.", e)
             finally:
                 os.remove(mesh_path)
                 os.remove(vtk_path)
@@ -295,6 +304,32 @@ def shell_to_particles(p_size=0.01, pos=(0, 0, 0), inner_radius=0.5, outer_radiu
     return positions
 
 
+def _splashsurf_worker(positions, radius, args_dict, result_queue):
+    try:
+        import pysplashsurf
+
+        mesh_with_data, _ = pysplashsurf.reconstruction_pipeline(
+            positions,
+            particle_radius=radius * args_dict.get("rscale", 1.0),
+            smoothing_length=2.0,
+            cube_size=0.8,
+            iso_surface_threshold=0.6,
+            mesh_smoothing_weights=True,
+            mesh_smoothing_iters=int(args_dict.get("smooth", 25)),
+            normals_smoothing_iters=10,
+            mesh_cleanup=True,
+            compute_normals=True,
+            multi_threading=True,
+        )
+        normals = mesh_with_data.point_attributes["normals"]
+        vertices = mesh_with_data.mesh.vertices
+        triangles = mesh_with_data.mesh.triangles
+        result_queue.put_nowait((vertices, triangles, normals))
+    except Exception as e:
+        result_queue.put_nowait(e)
+        raise
+
+
 def particles_to_mesh(positions, radius, backend):
     def parse_args(backend):
         args_dict = dict()
@@ -324,8 +359,8 @@ def particles_to_mesh(positions, radius, backend):
     args_dict = parse_args(backend)
 
     if "openvdb" in backend:
-        if gs.platform != "Linux" or sys.version_info[:2] == (3, 9):
-            gs.raise_exception("Backend 'openvdb' is only supported on Linux and Python 3.9 specfically.")
+        if sys.platform != "linux" or sys.version_info[:2] == (3, 9):
+            gs.raise_exception("Backend 'openvdb' is only supported on Linux and Python 3.9 specifically.")
 
         import ParticleMesherPy
 
@@ -344,52 +379,24 @@ def particles_to_mesh(positions, radius, backend):
         faces = mesh.triangles.reshape([-1, 3])
 
         return trimesh.Trimesh(vertices, faces, process=False)
-
     elif "splashsurf" in backend:
-        if gs.platform != "Linux":
-            gs.raise_exception("Backend 'splashsurf' is only supported on Linux.")
-
-        fd, xyz_path = tempfile.mkstemp(suffix=".xyz")
-        os.close(fd)
-        fd, obj_path = tempfile.mkstemp(suffix=".obj")
-        os.close(fd)
-        positions.astype(np.float32).tofile(xyz_path)
-
-        # Suggested value is 1.4-1.6, but 1.0 seems more detailed
-        radius_scale = args_dict.get("rscale", 1.0)
-        smooth_iter = args_dict.get("smooth")
-        r = radius * radius_scale
-
-        try:
-            command = ["splashsurf", "reconstruct", xyz_path, f"-r={r}", "-c=0.8", "-l=2.0", "-t=0.6", "-o", obj_path]
-            if smooth_iter is not None:
-                command += [
-                    "--mesh-cleanup=on",
-                    "--mesh-smoothing-weights=on",
-                    f"--mesh-smoothing-iters={int(smooth_iter)}",
-                    "--normals=on",
-                    "--normals-smoothing-iters=10",
-                ]
-
-            result = subprocess.run(map(str, command), capture_output=True, text=True)
-            if result.stdout:
-                gs.logger.debug(result.stdout)
-            if result.stderr:
-                gs.logger.warning(result.stderr)
-            if os.path.getsize(obj_path) == 0:
-                raise OSError("Output OBJ file is empty.")
-
-            # Read the generated OBJ file
-            mesh = trimesh.load_mesh(obj_path)
-            gs.logger.debug(f"[splashsurf]: reconstruct vertices: {mesh.vertices.shape}, {mesh.faces.shape}")
-        except OSError as e:
-            gs.raise_exception_from("Surface reconstruction failed.", e)
-        finally:
-            os.remove(xyz_path)
-            os.remove(obj_path)
-
+        # FIXME: Running in subprocess or manually reclaiming free-ed head memory is necessary to avoid unbounded growth
+        result_queue = Queue()
+        if malloc_trim is not None:
+            _splashsurf_worker(positions, radius, args_dict, result_queue)
+            result = result_queue.get()
+            malloc_trim(0)
+        else:
+            proc = Process(target=_splashsurf_worker, args=(positions, radius, args_dict, result_queue))
+            proc.start()
+            result = result_queue.get()
+            proc.join()
+            if proc.exitcode != 0:
+                gs.raise_exception_from(f"splashsurf subprocess failed with exit code {proc.exitcode}", result)
+        vertices, triangles, normals = result
+        mesh = trimesh.Trimesh(vertices=vertices, faces=triangles, face_normals=normals, process=False)
+        gs.logger.debug(f"[splashsurf]: reconstruct vertices: {mesh.vertices.shape}, {mesh.faces.shape}")
         return mesh
-
     else:
         gs.raise_exception(f"Unsupported backend: {backend}.")
 
@@ -407,7 +414,7 @@ def init_foam_generator(
     k_foam,
     foam_density,
 ):
-    if gs.platform != "Linux" or sys.version_info[:2] == (3, 9):
+    if sys.platform != "linux" or sys.version_info[:2] == (3, 9):
         gs.raise_exception("This method is only supported on Linux and Python 3.9 specfically.")
 
     import ParticleMesherPy
@@ -446,7 +453,7 @@ def generate_foam_particles(generator, positions, velocities):
 
 
 def filter_surface(positions, radii, particle_radius, half_width=8.0, radius_scale=1.0):
-    if gs.platform != "Linux" or sys.version_info[:2] == (3, 9):
+    if sys.platform != "linux" or sys.version_info[:2] == (3, 9):
         gs.raise_exception("This method is only supported on Linux and Python 3.9 specfically.")
 
     import ParticleMesherPy

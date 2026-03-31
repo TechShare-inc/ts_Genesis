@@ -1,12 +1,7 @@
-import taichi as ti
-import torch
-
 import genesis as gs
-import genesis.utils.geom as gu
 from genesis.repr_base import RBC
 
 
-@ti.data_oriented
 class RigidEquality(RBC):
     """
     Equality class for rigid body entities.
@@ -44,8 +39,8 @@ class RigidEquality(RBC):
         """
         Set the solver parameters of this equality constraint.
         """
-        if self.is_built:
-            self._solver.set_sol_params(sol_params[..., None, :], eqs_idx=self._idx, envs_idx=None, unsafe=False)
+        if self._solver.is_built:
+            self._solver.set_sol_params(sol_params, eqs_idx=self._idx, envs_idx=None)
         else:
             self._sol_params = sol_params
 
@@ -54,8 +49,8 @@ class RigidEquality(RBC):
         """
         Returns the solver parameters of this equality constraint.
         """
-        if self.is_built:
-            return self._solver.get_sol_params(eqs_idx=self._idx, envs_idx=None, unsafe=True)[..., 0, :]
+        if self._solver.is_built:
+            return self._solver.get_sol_params(eqs_idx=self._idx, envs_idx=None)[..., 0, :]
         return self._sol_params
 
     # ------------------------------------------------------------------------------------
@@ -114,14 +109,14 @@ class RigidEquality(RBC):
     @property
     def eq_obj1id(self):
         """
-        Returns the index of the first link.
+        Returns the index of the first object (joint for EQUALITY_TYPE.JOINT, link otherwise)
         """
         return self._eq_obj1id
 
     @property
     def eq_obj2id(self):
         """
-        Returns the index of the second link.
+        Returns the index of the second object (joint for EQUALITY_TYPE.JOINT, link otherwise)
         """
         return self._eq_obj2id
 

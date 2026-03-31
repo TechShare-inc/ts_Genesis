@@ -11,8 +11,11 @@ Expectation:
     - As you increase the number of GPUs, the gradient will be less noisy and the loss decreases faster.
 """
 
-import os, argparse, random, numpy as np
-import torch, torch.nn as nn, torch.distributed as dist
+import os
+import argparse
+import torch
+import torch.nn as nn
+import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 import genesis as gs
 
@@ -35,7 +38,7 @@ def run_worker(args: argparse.Namespace) -> None:
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
 
     os.environ["CUDA_VISIBLE_DEVICES"] = str(local_rank)
-    os.environ["TI_VISIBLE_DEVICE"] = str(local_rank)
+    os.environ["QD_VISIBLE_DEVICE"] = str(local_rank)
     # FIXME: Forcing rendering device is not working reliably on all machines
     # os.environ["EGL_DEVICE_ID"] = str(local_rank)
     gs.init(backend=gs.gpu, seed=local_rank)

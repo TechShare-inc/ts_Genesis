@@ -4,13 +4,13 @@ import genesis as gs
 
 
 def main():
-
     parser = argparse.ArgumentParser()
     parser.add_argument("-v", "--vis", action="store_true", default=False)
     parser.add_argument("-c", "--cpu", action="store_true", default=False)
     parser.add_argument("-s", "--sep", action="store_true", default=False)
     parser.add_argument("-r", "--record", action="store_true", default=False)
     parser.add_argument("-n", "--num_env", type=int, default=1)
+    parser.add_argument("--horizon", type=int, default=100)
     args = parser.parse_args()
 
     ########################## init ##########################
@@ -19,21 +19,21 @@ def main():
     ########################## create a scene ##########################
     scene = gs.Scene(
         vis_options=gs.options.VisOptions(
-            plane_reflection=False,
+            plane_reflection=True,
             rendered_envs_idx=list(range(args.num_env)),
             env_separate_rigid=args.sep,
-            show_world_frame=False,
-            show_link_frame=False,
+            show_world_frame=True,
+            show_link_frame=True,
         ),
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(3.5, 0.0, 2.5),
             camera_lookat=(0.0, 0.0, 0.5),
             camera_fov=40,
         ),
-        show_viewer=args.vis,
         rigid_options=gs.options.RigidOptions(
             # constraint_solver=gs.constraint_solver.Newton,
         ),
+        show_viewer=args.vis,
     )
 
     ########################## entities ##########################
@@ -51,7 +51,7 @@ def main():
         pos=(3.5, 0.0, 2.5),
         lookat=(0, 0, 0.5),
         fov=30,
-        GUI=True,
+        GUI=args.vis,
     )
     ########################## build ##########################
     scene.build(n_envs=args.num_env, env_spacing=(0.5, 0.5))
@@ -59,8 +59,7 @@ def main():
     if args.record:
         cam_0.start_recording()
 
-    horizon = 1000
-    for i in range(horizon):
+    for i in range(args.horizon):
         scene.step()
 
         color, depth, seg, normal = cam_0.render(

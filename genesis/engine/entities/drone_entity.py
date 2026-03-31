@@ -2,29 +2,26 @@ import os
 import xml.etree.ElementTree as ET
 
 import torch
-import taichi as ti
 
 import genesis as gs
-import genesis.utils.misc as mu
+from genesis.utils.misc import get_assets_dir
 
 from .rigid_entity import RigidEntity
 
 
-@ti.data_oriented
 class DroneEntity(RigidEntity):
     def _load_scene(self, morph, surface):
         super()._load_scene(morph, surface)
 
         # additional drone specific attributes
-        properties = ET.parse(os.path.join(mu.get_assets_dir(), morph.file)).getroot()[0].attrib
+        properties = ET.parse(os.path.join(get_assets_dir(), morph.file)).getroot()[0].attrib
         self._KF = float(properties["kf"])
         self._KM = float(properties["km"])
 
         self._n_propellers = len(morph.propellers_link_name)
-        self._COM_link_idx = self.get_link(morph.COM_link_name).idx
 
         propellers_link = gs.List([self.get_link(name) for name in morph.propellers_link_name])
-        self._propellers_link_idxs = torch.tensor(
+        self._propellers_link_idx = torch.tensor(
             [link.idx for link in propellers_link], dtype=gs.tc_int, device=gs.device
         )
         try:
@@ -42,18 +39,16 @@ class DroneEntity(RigidEntity):
     def _build(self):
         super()._build()
 
-        self._propellers_revs = torch.zeros(
-            self._solver._batch_shape(self._n_propellers), dtype=gs.tc_float, device=gs.device
-        )
+        self._propellers_revs = torch.zeros((self._n_propellers, self.solver._B), dtype=gs.tc_float, device=gs.device)
         self._prev_prop_t = None
 
-    def set_propellels_rpm(self, propellels_rpm):
+    def set_propellers_rpm(self, propellers_rpm):
         """
         Set the RPM (revolutions per minute) for each propeller in the drone.
 
         Parameters
         ----------
-        propellels_rpm : array-like or torch.Tensor
+        propellers_rpm : array-like or torch.Tensor
             A tensor or array of shape (n_propellers,) or (n_envs, n_propellers) specifying
             the desired RPM values for each propeller. Must be non-negative.
 
@@ -64,23 +59,25 @@ class DroneEntity(RigidEntity):
             does not match the number of propellers, or contains negative values.
         """
         if self._prev_prop_t == self.sim.cur_step_global:
-            gs.raise_exception("`set_propellels_rpm` can only be called once per step.")
+            gs.raise_exception("`set_propellers_rpm` can only be called once per step.")
         self._prev_prop_t = self.sim.cur_step_global
 
-        propellels_rpm = self.solver._process_dim(
-            torch.as_tensor(propellels_rpm, dtype=gs.tc_float, device=gs.device)
-        ).T.contiguous()
-        if len(propellels_rpm) != len(self._propellers_link_idxs):
-            gs.raise_exception("Last dimension of `propellels_rpm` does not match `entity.n_propellers`.")
-        if torch.any(propellels_rpm < 0):
-            gs.raise_exception("`propellels_rpm` cannot be negative.")
-        self._propellers_revs = (self._propellers_revs + propellels_rpm) % (60 / self.solver.dt)
+        assert propellers_rpm is not None
+        propellers_rpm, *_ = self._solver._sanitize_io_variables(
+            propellers_rpm, self._propellers_link_idx, self._n_propellers, "propellers_link_idx"
+        )
+        if self._scene.n_envs == 0:
+            propellers_rpm = propellers_rpm[None]
 
-        self.solver._kernel_set_drone_rpm(
-            self._n_propellers,
-            self._COM_link_idx,
-            self._propellers_link_idxs,
-            propellels_rpm,
+        # FIXME: This check is too expensive
+        # if (propellers_rpm < 0.0).any():
+        #     gs.raise_exception("`propellers_rpm` cannot be negative.")
+
+        self._propellers_revs = (self._propellers_revs + propellers_rpm.T) % (60 / self.solver.dt)
+
+        self.solver.set_drone_rpm(
+            self._propellers_link_idx,
+            propellers_rpm,
             self._propellers_spin,
             self.KF,
             self.KM,
@@ -94,8 +91,8 @@ class DroneEntity(RigidEntity):
         This method is a no-op if animation is disabled due to missing visual geometry.
         """
         if self._animate_propellers:
-            self.solver._update_drone_propeller_vgeoms(
-                self._n_propellers, self._propellers_vgeom_idxs, self._propellers_revs, self._propellers_spin
+            self.solver.update_drone_propeller_vgeoms(
+                self._propellers_vgeom_idxs, self._propellers_revs, self._propellers_spin
             )
 
     @property
@@ -126,7 +123,7 @@ class DroneEntity(RigidEntity):
     @property
     def propellers_idx(self):
         """The indices of the drone's propeller links."""
-        return self._propellers_link_idxs
+        return self._propellers_link_idx
 
     @property
     def propellers_spin(self):

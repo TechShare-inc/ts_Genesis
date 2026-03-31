@@ -3,6 +3,7 @@ tmp/
 wandb/
 MUJOCO_LOG.TXT
 imgui.ini
+.polyscope.ini
 .DS_Store
 sftp-config.json
 *.mp4
@@ -46,7 +47,6 @@ MANIFEST
 
 # debug
 examples/debug/*
-genesis/assets/usd/*
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -71,6 +71,7 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+__snapshots__
 
 # Translations
 *.mo
@@ -153,3 +154,7 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+uv.lock
+
+# alarm.yml outputs
+outputs/

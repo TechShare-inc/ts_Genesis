@@ -1,4 +1,5 @@
 import argparse
+import os
 
 import torch
 
@@ -11,7 +12,7 @@ def main():
     args = parser.parse_args()
 
     ########################## init ##########################
-    gs.init(seed=0, precision="32", logging_level="warning")
+    gs.init(precision="32", logging_level="warning")
 
     ########################## create a scene ##########################
 
@@ -89,33 +90,29 @@ def main():
     scene.build(n_envs=2)
 
     ########################## forward + backward twice ##########################
-    horizon = 150
+    horizon = 150 if "PYTEST_VERSION" not in os.environ else 5
     v_list = [gs.tensor([[0.0, 1.0, 0.0], [0.0, 1.0, 0.0]], requires_grad=True) for _ in range(horizon)]
     for _ in range(2):
         scene.reset()
         init_pos = gs.tensor([[0.3, 0.1, 0.28], [0.3, 0.1, 0.5]], requires_grad=True)
+        stick.set_position(init_pos)
+        pos_obj1_init = gs.tensor([0.3, 0.3, 0.1], requires_grad=True)
+        obj1.set_position(pos_obj1_init)
+        v_obj1_init = gs.tensor([0.0, -1.0, 0.0], requires_grad=True)
+        obj1.set_velocity(v_obj1_init)
 
         # forward pass
         print("forward")
         timer = gs.tools.Timer()
-        stick.set_position(init_pos)
-        v_obj1_init = gs.tensor([0.0, -1.0, 0.0], requires_grad=True)
-        obj1.set_velocity(v_obj1_init)
-        pos_obj1_init = gs.tensor([0.3, 0.3, 0.1], requires_grad=True)
-        obj1.set_position(pos_obj1_init)
-        loss = 0
-
-        for i in range(horizon):
-            v_i = v_list[i]
-
+        loss = 0.0
+        for i, v_i in enumerate(v_list):
             # uncomment this to set an angular velocity
             # w_i = gs.tensor([2.0, 0.0, 0.0], requires_grad=True)
             # stick.set_velocity(vel=v_i, ang=w_i)
-
             stick.set_velocity(vel=v_i)
-            v_list.append(v_i)
 
             scene.step()
+
             # uncomment this to render images
             # img0 = cam_0.render()
             # img1 = cam_1.render()
@@ -124,7 +121,7 @@ def main():
             if i == 25:
                 # compute loss
                 goal = gs.tensor([0.5, 0.8, 0.05])
-                mpm_particles = scene.get_state().solvers_state[3]
+                mpm_particles = scene.get_state().solvers_state[scene.solvers.index(scene.mpm_solver)]
                 loss += torch.pow(mpm_particles.pos[mpm_particles.active == 1] - goal, 2).sum()
 
             # you can also use an entity's state

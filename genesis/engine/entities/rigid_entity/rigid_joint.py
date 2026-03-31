@@ -1,13 +1,12 @@
-import taichi as ti
+import quadrants as qd
 import torch
 
 import genesis as gs
-import genesis.utils.geom as gu
+from genesis.utils import array_class
 from genesis.utils.misc import DeprecationError
 from genesis.repr_base import RBC
 
 
-@ti.data_oriented
 class RigidJoint(RBC):
     """
     Joint class for rigid body entities. Each RigidLink is connected to its parent link via a RigidJoint.
@@ -32,6 +31,7 @@ class RigidJoint(RBC):
         dofs_motion_vel,
         dofs_limit,
         dofs_invweight,
+        dofs_frictionloss,
         dofs_stiffness,
         dofs_damping,
         dofs_armature,
@@ -60,6 +60,7 @@ class RigidJoint(RBC):
         self._dofs_motion_vel = dofs_motion_vel
         self._dofs_limit = dofs_limit
         self._dofs_invweight = dofs_invweight
+        self._dofs_frictionloss = dofs_frictionloss
         self._dofs_stiffness = dofs_stiffness
         self._dofs_damping = dofs_damping
         self._dofs_armature = dofs_armature
@@ -67,12 +68,21 @@ class RigidJoint(RBC):
         self._dofs_kv = dofs_kv
         self._dofs_force_range = dofs_force_range
 
-        # NOTE: temp hack to use 0 damping/armature for drone
-        if isinstance(self._entity, gs.engine.entities.DroneEntity) and self._type == gs.JOINT_TYPE.FREE:
-            import numpy as np
-
-            self._dofs_damping = np.zeros_like(self._dofs_damping)
-            self._dofs_armature = np.zeros_like(self._dofs_armature)
+    def __getattr__(self, name):
+        # Must be implemented to throw deprecation warnings when accessing old properties, ignoring introspection
+        for name_old, name_new in (
+            ("dof_idx", "dofs_idx"),
+            ("dof_idx_local", "dofs_idx_local"),
+            ("q_idx", "qs_idx"),
+            ("q_idx_local", "qs_idx_local"),
+        ):
+            if name == name_old:
+                gs.logger.warning(
+                    f"This property is deprecated and will be removed in future release. Please use '{name_new}' instead."
+                )
+                getter = getattr(self, f"_{name_old}")
+                return getter()
+        raise AttributeError
 
     # ------------------------------------------------------------------------------------
     # -------------------------------- real-time state -----------------------------------
@@ -106,18 +116,11 @@ class RigidJoint(RBC):
         generalized coordinates corresponding to this joint (and all its ancestors in the kinematic tree). Physically,
         the anchor point is the "output" of the joint transmission, on which the child body is welded.
         """
-        tensor = torch.empty(self._solver._batch_shape(3, True), dtype=gs.tc_float, device=gs.device)
-        self._kernel_get_anchor_pos(tensor)
+        tensor = torch.empty((self._solver._B, 3), dtype=gs.tc_float, device=gs.device)
+        _kernel_get_anchor_pos(self._idx, tensor, self._solver.joints_state)
         if self._solver.n_envs == 0:
-            tensor = tensor.squeeze(0)
+            tensor = tensor[0]
         return tensor
-
-    @ti.kernel
-    def _kernel_get_anchor_pos(self, tensor: ti.types.ndarray()):
-        for i_b in range(self._solver._B):
-            xpos = self._solver.joints_state[self._idx, i_b].xanchor
-            for i in ti.static(range(3)):
-                tensor[i_b, i] = xpos[i]
 
     @gs.assert_built
     def get_anchor_axis(self):
@@ -126,35 +129,28 @@ class RigidJoint(RBC):
 
         See `RigidJoint.get_anchor_pos` documentation for details about the notion on anchor point.
         """
-        tensor = torch.empty(self._solver._batch_shape(3, True), dtype=gs.tc_float, device=gs.device)
-        self._kernel_get_anchor_axis(tensor)
+        tensor = torch.empty((self._solver._B, 3), dtype=gs.tc_float, device=gs.device)
+        _kernel_get_anchor_axis(self._idx, tensor, self._solver.joints_state)
         if self._solver.n_envs == 0:
-            tensor = tensor.squeeze(0)
+            tensor = tensor[0]
         return tensor
-
-    @ti.kernel
-    def _kernel_get_anchor_axis(self, tensor: ti.types.ndarray()):
-        for i_b in range(self._solver._B):
-            xaxis = self._solver.joints_state[self._idx, i_b].xaxis
-            for i in ti.static(range(3)):
-                tensor[i_b, i] = xaxis[i]
 
     def set_sol_params(self, sol_params):
         """
         Set the solver parameters of this joint.
         """
-        if self.is_built:
-            self._solver.set_sol_params(sol_params[..., None, :], joints_idx=self._idx, envs_idx=None, unsafe=False)
+        if self._solver.is_built:
+            self._solver.set_sol_params(sol_params, joints_idx=self._idx, envs_idx=None)
         else:
             self._sol_params = sol_params
 
     @property
     def sol_params(self):
         """
-        Retruns the solver parameters of the joint.
+        Returns the solver parameters of the joint.
         """
-        if self.is_built:
-            return self._solver.get_sol_params(joints_idx=self._idx, envs_idx=None, unsafe=True)[..., 0, :]
+        if self._solver.is_built:
+            return self._solver.get_sol_params(joints_idx=self._idx, envs_idx=None)[..., 0, :]
         return self._sol_params
 
     # ------------------------------------------------------------------------------------
@@ -280,17 +276,13 @@ class RigidJoint(RBC):
         """
         return self._n_dofs + self.dof_start
 
-    @property
-    def dof_idx(self):
+    def _dof_idx(self):
         """
         Returns all the Degrees' of Freedom (DoF) indices of the joint in the rigid solver.
 
         This property either returns a list, an integer, or None depending on whether the joint has multiple DoFs, a
         single one, or none, respectively.
         """
-        gs.logger.warning(
-            "This property is deprecated and will be removed in future release. Please use 'dofs_idx' instead."
-        )
         if self.n_dofs == 1:
             return self.dof_start
         if self.n_dofs == 0:
@@ -304,17 +296,13 @@ class RigidJoint(RBC):
         """
         return list(range(self.dof_start, self.dof_end))
 
-    @property
-    def dof_idx_local(self):
+    def _dof_idx_local(self):
         """
         Returns the local dof index of the joint in the entity.
 
         This property either returns a list, an integer, or None depending on whether the joint has multiple DoFs, a
         single one, or none, respectively.
         """
-        gs.logger.warning(
-            "This property is deprecated and will be removed in future release. Please use 'dofs_idx_local' instead."
-        )
         if self.n_dofs == 1:
             return self.dof_start - self._entity.dof_start
         if self.n_dofs == 0:
@@ -328,17 +316,13 @@ class RigidJoint(RBC):
         """
         return list(range(self.dof_start - self._entity.dof_start, self.dof_end - self._entity.dof_start))
 
-    @property
-    def q_idx(self):
+    def _q_idx(self):
         """
         Returns all the position indices of the joint in the rigid solver.
 
         This property either returns a list, an integer, or None depending on whether the joint has multiple position
         indices, a single one, or none, respectively.
         """
-        gs.logger.warning(
-            "This property is deprecated and will be removed in future release. Please use 'qs_idx' instead."
-        )
         if self.n_qs == 1:
             return self.q_start
         elif self.n_qs == 0:
@@ -353,14 +337,10 @@ class RigidJoint(RBC):
         """
         return list(range(self.q_start, self.q_end))
 
-    @property
-    def q_idx_local(self):
+    def _q_idx_local(self):
         """
         Returns all the local `q` indices of the joint in the entity.
         """
-        gs.logger.warning(
-            "This property is deprecated and will be removed in future release. Please use 'qs_idx_local' instead."
-        )
         if self.n_qs == 1:
             return self.q_start - self._entity.q_start
         elif self.n_qs == 0:
@@ -396,6 +376,13 @@ class RigidJoint(RBC):
         Returns the invweight of the dofs of the joint.
         """
         return self._dofs_invweight
+
+    @property
+    def dofs_frictionloss(self):
+        """
+        Returns the frictionloss of the dofs of the joint.
+        """
+        return self._dofs_frictionloss
 
     @property
     def dofs_stiffness(self):
@@ -451,4 +438,22 @@ class RigidJoint(RBC):
     # ------------------------------------------------------------------------------------
 
     def _repr_brief(self):
-        return f"{(self._repr_type())}: {self._uid}, name: '{self._name}', idx: {self._idx}, type: {self._type}"
+        return f"{(self.__repr_name__())}: {self._uid}, name: '{self._name}', idx: {self._idx}, type: {self._type}"
+
+
+@qd.kernel
+def _kernel_get_anchor_pos(joint_idx: qd.i32, tensor: qd.types.ndarray(), joints_state: array_class.JointsState):
+    _B = joints_state.xanchor.shape[1]
+    for i_b in range(_B):
+        xpos = joints_state.xanchor[joint_idx, i_b]
+        for i in qd.static(range(3)):
+            tensor[i_b, i] = xpos[i]
+
+
+@qd.kernel
+def _kernel_get_anchor_axis(joint_idx: qd.i32, tensor: qd.types.ndarray(), joints_state: array_class.JointsState):
+    _B = joints_state.xaxis.shape[1]
+    for i_b in range(_B):
+        xaxis = joints_state.xaxis[joint_idx, i_b]
+        for i in qd.static(range(3)):
+            tensor[i_b, i] = xaxis[i]

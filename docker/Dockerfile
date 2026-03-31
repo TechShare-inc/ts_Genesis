@@ -69,6 +69,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     bash-completion \
     libgl1 \
     libgl1-mesa-glx \
+    libglu1-mesa \
     libegl-dev \
     libegl1 \
     libxrender1 \
@@ -84,6 +85,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
+
+# ------------------------ No root user --------------------------
+RUN useradd --shell /bin/bash -u 1001 -c "" -m user
 
 # --------------------------- Genesis ----------------------------
 RUN pip install --no-cache-dir open3d
@@ -101,12 +105,24 @@ ENV LD_LIBRARY_PATH=/opt/conda/lib/python3.11/site-packages/genesis/ext/Particle
 # Copy LuisaRender build artifacts from the builder stage
 COPY --from=builder /workspace/Genesis/genesis/ext/LuisaRender/build/bin /opt/conda/lib/python3.11/site-packages/genesis/ext/LuisaRender/build/bin
 # fix GLIBCXX_3.4.30 not found
-RUN cd /opt/conda/lib && \
-    mv libstdc++.so.6 libstdc++.so.6.old && \
-    ln -s /usr/lib/x86_64-linux-gnu/libstdc++.so.6 libstdc++.so.6
+# Remove this — it's dangerous and broke cmake
+# RUN cd /opt/conda/lib && \
+#     mv libstdc++.so.6 libstdc++.so.6.old && \
+#     ln -s /usr/lib/x86_64-linux-gnu/libstdc++.so.6 libstdc++.so.6
+ENV LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
 
 COPY 10_nvidia.json /usr/share/glvnd/egl_vendor.d/10_nvidia.json
 COPY nvidia_icd.json /usr/share/vulkan/icd.d/nvidia_icd.json
 COPY nvidia_layers.json /etc/vulkan/implicit_layer.d/nvidia_layers.json
 
-ENTRYPOINT ["/bin/bash"]
+# ---------------------- Custom Entrypoint -----------------------
+RUN echo '#!/bin/bash\n\
+if [ -n "${LOCAL_USER_ID}" ]; then\n\
+  echo "Starting with UID: $LOCAL_USER_ID"\n\
+  usermod -u $LOCAL_USER_ID user\n\
+  chown -R user:user /opt/conda/lib/python3.11/site-packages/genesis/ext/LuisaRender/\n\
+fi\n\
+exec /bin/bash' > /entrypoint.sh && \
+chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

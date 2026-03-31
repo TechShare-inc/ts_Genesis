@@ -43,27 +43,29 @@ class SimState(RBC):
         return iter(self._solvers_state)
 
 
-class RigidSolverState:
+class KinematicSolverState:
     """
-    Dynamic state queried from a RigidSolver.
+    Dynamic state queried from a KinematicSolver.
+
+    Only stores position-related fields (qpos, link poses). Physics fields
+    (velocity, acceleration, mass, friction) are omitted since kinematic entities have no dynamics.
     """
 
-    def __init__(self, scene):
+    def __init__(self, scene, s_global):
         self.scene = scene
+        self._s_global = s_global
+
+        _B = scene.sim.kinematic_solver._B
         args = {
-            "dtype": float,
+            "dtype": gs.tc_float,
             "requires_grad": scene.requires_grad,
             "scene": self.scene,
         }
-        self.qpos = gs.zeros(scene.sim.rigid_solver._batch_shape(scene.sim.rigid_solver.n_qs, True), **args)
-        self.dofs_vel = gs.zeros(scene.sim.rigid_solver._batch_shape(scene.sim.rigid_solver.n_dofs, True), **args)
-        n_links = scene.sim.rigid_solver.n_links
-        n_geoms = scene.sim.rigid_solver.n_geoms
-        self.links_pos = gs.zeros(scene.sim.rigid_solver._batch_shape((n_links, 3), True), **args)
-        self.links_quat = gs.zeros(scene.sim.rigid_solver._batch_shape((n_links, 4), True), **args)
-        self.i_pos_shift = gs.zeros(scene.sim.rigid_solver._batch_shape((n_links, 3), True), **args)
-        self.mass_shift = gs.zeros(scene.sim.rigid_solver._batch_shape(n_links, True), **args)
-        self.friction_ratio = gs.ones(scene.sim.rigid_solver._batch_shape(n_geoms, True), **args)
+        self.qpos = gs.zeros((_B, scene.sim.kinematic_solver.n_qs), **args)
+        self.dofs_vel = gs.zeros((_B, scene.sim.kinematic_solver.n_dofs), **args)
+        self.links_pos = gs.zeros((_B, scene.sim.kinematic_solver.n_links, 3), **args)
+        self.links_quat = gs.zeros((_B, scene.sim.kinematic_solver.n_links, 4), **args)
+        self.i_pos_shift = gs.zeros((_B, scene.sim.kinematic_solver.n_links, 3), **args)
 
     def serializable(self):
         self.scene = None
@@ -72,35 +74,51 @@ class RigidSolverState:
         self.links_pos = self.links_pos.detach()
         self.links_quat = self.links_quat.detach()
         self.i_pos_shift = self.i_pos_shift.detach()
-        self.mass_shift = self.mass_shift.detach()
-        self.friction_ratio = self.friction_ratio.detach()
+
+    @property
+    def s_global(self):
+        return self._s_global
 
 
-class AvatarSolverState:
+class RigidSolverState:
     """
-    Dynamic state queried from a AvatarSolver.
+    Dynamic state queried from a RigidSolver.
     """
 
-    def __init__(self, scene):
+    def __init__(self, scene, s_global):
         self.scene = scene
+
+        self._s_global = s_global
+
+        _B = scene.sim.rigid_solver._B
         args = {
-            "dtype": float,
+            "dtype": gs.tc_float,
             "requires_grad": scene.requires_grad,
             "scene": self.scene,
         }
-        self.qpos = gs.zeros(scene.sim.avatar_solver._batch_shape(scene.sim.avatar_solver.n_qs, True), **args)
-        self.dofs_vel = gs.zeros(scene.sim.avatar_solver._batch_shape(scene.sim.avatar_solver.n_dofs, True), **args)
-
-        n_links = scene.sim.avatar_solver.n_links
-        self.links_pos = gs.zeros(scene.sim.avatar_solver._batch_shape((n_links, 3), True), **args)
-        self.links_quat = gs.zeros(scene.sim.avatar_solver._batch_shape((n_links, 4), True), **args)
+        self.qpos = gs.zeros((_B, scene.sim.rigid_solver.n_qs), **args)
+        self.dofs_vel = gs.zeros((_B, scene.sim.rigid_solver.n_dofs), **args)
+        self.dofs_acc = gs.zeros((_B, scene.sim.rigid_solver.n_dofs), **args)
+        self.links_pos = gs.zeros((_B, scene.sim.rigid_solver.n_links, 3), **args)
+        self.links_quat = gs.zeros((_B, scene.sim.rigid_solver.n_links, 4), **args)
+        self.i_pos_shift = gs.zeros((_B, scene.sim.rigid_solver.n_links, 3), **args)
+        self.mass_shift = gs.zeros((_B, scene.sim.rigid_solver.n_links), **args)
+        self.friction_ratio = gs.ones((_B, scene.sim.rigid_solver.n_geoms), **args)
 
     def serializable(self):
         self.scene = None
         self.qpos = self.qpos.detach()
         self.dofs_vel = self.dofs_vel.detach()
+        self.dofs_acc = self.dofs_acc.detach()
         self.links_pos = self.links_pos.detach()
         self.links_quat = self.links_quat.detach()
+        self.i_pos_shift = self.i_pos_shift.detach()
+        self.mass_shift = self.mass_shift.detach()
+        self.friction_ratio = self.friction_ratio.detach()
+
+    @property
+    def s_global(self):
+        return self._s_global
 
 
 class ToolSolverState:
@@ -137,7 +155,7 @@ class MPMSolverState(RBC):
     def __init__(self, scene):
         self._scene = scene
         args = {
-            "dtype": float,
+            "dtype": gs.tc_float,
             "requires_grad": scene.requires_grad,
             "scene": self._scene,
         }
@@ -146,7 +164,7 @@ class MPMSolverState(RBC):
         self._C = gs.zeros((scene.sim._B, scene.sim.mpm_solver.n_particles, 3, 3), **args)
         self._F = gs.zeros((scene.sim._B, scene.sim.mpm_solver.n_particles, 3, 3), **args)
         self._Jp = gs.zeros((scene.sim._B, scene.sim.mpm_solver.n_particles), **args)
-        args["dtype"] = int
+        args["dtype"] = gs.tc_bool
         args["requires_grad"] = False
         self._active = gs.zeros((scene.sim._B, scene.sim.mpm_solver.n_particles), **args)
 
@@ -197,13 +215,13 @@ class SPHSolverState:
     def __init__(self, scene):
         self._scene = scene
         args = {
-            "dtype": float,
+            "dtype": gs.tc_float,
             "requires_grad": scene.requires_grad,
             "scene": self._scene,
         }
         self._pos = gs.zeros((scene.sim._B, scene.sim.sph_solver.n_particles, 3), **args)
         self._vel = gs.zeros((self._scene.sim._B, scene.sim.sph_solver.n_particles, 3), **args)
-        args["dtype"] = int
+        args["dtype"] = gs.tc_bool
         args["requires_grad"] = False
         self._active = gs.zeros((self._scene.sim._B, scene.sim.sph_solver.n_particles), **args)
 
@@ -232,13 +250,13 @@ class PBDSolverState:
     def __init__(self, scene):
         self._scene = scene
         args = {
-            "dtype": float,
+            "dtype": gs.tc_float,
             "requires_grad": scene.requires_grad,
             "scene": self._scene,
         }
         self._pos = gs.zeros((scene.sim._B, scene.sim.pbd_solver.n_particles, 3), **args)
         self._vel = gs.zeros((self._scene.sim._B, scene.sim.pbd_solver.n_particles, 3), **args)
-        args["dtype"] = int
+        args["dtype"] = gs.tc_bool
         args["requires_grad"] = False
         self._free = gs.zeros((self._scene.sim._B, scene.sim.pbd_solver.n_particles), **args)
 
@@ -258,24 +276,18 @@ class PBDSolverState:
     def free(self):
         return self._free
 
-    # def __repr__(self):
-    #     return f'{_repr(self)}\n' \
-    #            f'scene : {_repr(self.scene)}\n' \
-    #            f'pos   : {_repr(self.pos)}\n' \
-    #            f'vel   : {_repr(self.vel)}\n'
-
 
 class FEMSolverState:
     def __init__(self, scene):
         self._scene = scene
         args = {
-            "dtype": float,
+            "dtype": gs.tc_float,
             "requires_grad": scene.requires_grad,
             "scene": self._scene,
         }
         self._pos = gs.zeros((scene.sim._B, scene.sim.fem_solver.n_vertices, 3), **args)
         self._vel = gs.zeros((scene.sim._B, scene.sim.fem_solver.n_vertices, 3), **args)
-        args["dtype"] = int
+        args["dtype"] = gs.tc_bool
         args["requires_grad"] = False
         self._active = gs.zeros((scene.sim._B, scene.sim.fem_solver.n_elements), **args)
 

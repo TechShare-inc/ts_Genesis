@@ -1,5 +1,5 @@
 import os
-import gc
+import sys
 
 import numpy as np
 
@@ -8,6 +8,7 @@ import OpenGL
 import genesis as gs
 from genesis.repr_base import RBC
 from genesis.ext import pyrender
+from genesis.vis.camera import Camera
 
 
 class Rasterizer(RBC):
@@ -18,14 +19,24 @@ class Rasterizer(RBC):
         self._camera_targets = dict()
         self._offscreen = self._viewer is None
         self._renderer = None
+        self._buffer_updates = None
 
     def build(self):
         if self._context is None:
             return
 
         if self._offscreen:
-            # if environment variable is set, use the platform specified, otherwise some platform-specific default
-            platform = os.environ.get("PYOPENGL_PLATFORM", "egl" if gs.platform == "Linux" else "pyglet")
+            # Select PyOpenGL backend for `pyrender.OffscreenRenderer`.
+            # If env variable is set, use specified platform if supported, otherwise some platform-specific default.
+            platform = os.environ.get("PYOPENGL_PLATFORM", "egl" if sys.platform == "linux" else "pyglet")
+            if platform not in ("osmesa", "pyglet", "egl"):
+                gs.logger.warning(f"PYOPENGL_PLATFORM='{platform}' not supported. Falling back to 'pyglet'.")
+                platform = "pyglet"
+            if sys.platform == "win32" and platform == "osmesa":
+                gs.raise_exception("PYOPENGL_PLATFORM='osmesa' not supported on Windows OS. Falling back to 'pyglet'.")
+                platform = "pyglet"
+
+            # Start the viewer
             self._renderer = pyrender.OffscreenRenderer(
                 pyopengl_platform=platform, seg_node_map=self._context.seg_node_map
             )
@@ -49,83 +60,119 @@ class Rasterizer(RBC):
         self._context.update_camera_frustum(camera)
 
     def remove_camera(self, camera):
-        self._context.removenode(self._camera_nodes[camera.uid])
+        self._context.remove_node(self._camera_nodes[camera.uid])
         del self._camera_nodes[camera.uid]
-        self._camera_targets[camera.uid].delete()
+        if self._offscreen:
+            self._camera_targets[camera.uid].delete()
+        else:
+            self._viewer.close_offscreen(self._camera_targets[camera.uid])
         del self._camera_targets[camera.uid]
 
     def render_camera(self, camera, rgb=True, depth=False, segmentation=False, normal=False):
-        rgb_arr, depth_arr, seg_idxc_arr, normal_arr = None, None, None, None
-        if self._offscreen:
-            if rgb or depth or normal:
-                retval = self._renderer.render(
-                    self._context._scene,
-                    self._camera_targets[camera.uid],
-                    camera_node=self._camera_nodes[camera.uid],
-                    env_separate_rigid=self._context.env_separate_rigid,
-                    ret_depth=depth,
-                    normal=normal,
-                    seg=False,
-                )
+        # Update camera
+        self.update_camera(camera)
 
-            if segmentation:
-                seg_idxc_rgb_arr, _ = self._renderer.render(
-                    self._context._scene,
-                    self._camera_targets[camera.uid],
-                    camera_node=self._camera_nodes[camera.uid],
-                    env_separate_rigid=self._context.env_separate_rigid,
-                    ret_depth=False,
-                    normal=False,
-                    seg=True,
-                )
+        rgb_arr, depth_arr, seg_idxc_arr, normal_arr = None, None, None, None
+        skip_markers = not camera.debug if isinstance(camera, Camera) else True
+        if self._offscreen:
+            # Set the context
+            self._renderer.make_current()
+
+            # Update the context if not already done before
+            self._context.jit.update_buffer(self._context.buffer)
+            self._context.buffer.clear()
+            try:
+                if rgb or depth or normal:
+                    retval = self._renderer.render(
+                        self._context._scene,
+                        self._camera_targets[camera.uid],
+                        camera_node=self._camera_nodes[camera.uid],
+                        env_separate_rigid=self._context.env_separate_rigid,
+                        rgb=rgb,
+                        normal=normal,
+                        seg=False,
+                        depth=depth,
+                        plane_reflection=rgb and self._context.plane_reflection,
+                        shadow=rgb and self._context.shadow,
+                        skip_markers=skip_markers,
+                    )
+
+                if segmentation:
+                    seg_idxc_rgb_arr, *_ = self._renderer.render(
+                        self._context._scene,
+                        self._camera_targets[camera.uid],
+                        camera_node=self._camera_nodes[camera.uid],
+                        env_separate_rigid=self._context.env_separate_rigid,
+                        rgb=False,
+                        normal=False,
+                        seg=True,
+                        depth=False,
+                        plane_reflection=False,
+                        shadow=False,
+                        skip_markers=skip_markers,
+                    )
+            finally:
+                # Unset the context
+                self._renderer.make_uncurrent()
         else:
+            # Render
             if rgb or depth or normal:
-                retval = self._viewer._pyrender_viewer.render_offscreen(
+                retval = self._viewer.render_offscreen(
                     self._camera_nodes[camera.uid],
                     self._camera_targets[camera.uid],
+                    rgb=rgb,
                     depth=depth,
                     normal=normal,
+                    seg=False,
+                    skip_markers=skip_markers,
                 )
 
             if segmentation:
-                seg_idxc_rgb_arr, _ = self._viewer._pyrender_viewer.render_offscreen(
+                seg_idxc_rgb_arr, *_ = self._viewer.render_offscreen(
                     self._camera_nodes[camera.uid],
                     self._camera_targets[camera.uid],
+                    rgb=False,
                     depth=False,
                     normal=False,
                     seg=True,
+                    skip_markers=skip_markers,
                 )
+
+        if segmentation:
+            seg_idxc_arr = self._context.seg_idxc_rgb_arr_to_idxc_arr(seg_idxc_rgb_arr)
 
         if rgb:
             rgb_arr = retval[0]
         if depth:
-            depth_arr = retval[1]
+            depth_arr = retval[int(rgb)]
         if normal:
-            normal_arr = retval[2]
-        if segmentation:
-            seg_idxc_arr = self._context.seg_idxc_rgb_arr_to_idxc_arr(seg_idxc_rgb_arr)
+            normal_arr = retval[int(rgb + depth)]
         return rgb_arr, depth_arr, seg_idxc_arr, normal_arr
 
-    def update_scene(self):
-        buffer_updates = self._context.update()
-        self._context.jit.update_buffer(buffer_updates)
+    def update_scene(self, force_render: bool = False):
+        self._context.update(force_render)
 
     def destroy(self):
         for node in self._camera_nodes.values():
             self._context.remove_node(node)
         self._camera_nodes.clear()
-        for target in self._camera_targets.values():
-            target.delete()
+        for camera_target in self._camera_targets.values():
+            try:
+                if self._offscreen:
+                    camera_target.delete()
+                elif self._viewer is not None:
+                    self._viewer.close_offscreen(camera_target)
+            except (OpenGL.error.NullFunctionError, OSError):
+                pass
         self._camera_targets.clear()
 
         if self._offscreen and self._renderer is not None:
             try:
-                self._renderer._platform.make_current()
+                self._renderer.make_current()
                 self._renderer.delete()
-            except OpenGL.error.GLError:
+            except (OpenGL.error.GLError, OpenGL.error.NullFunctionError, ImportError):
                 pass
             del self._renderer
-            gc.collect()
             self._renderer = None
 
     @property

@@ -1,13 +1,13 @@
-import taichi as ti
+from typing import Literal
 
 from .base import Base
 
+SamplerType = Literal["pbs", "random", "regular"]
 
-@ti.data_oriented
+
 class Smoke(Base):
-    def __init__(self):
-        super().__init__()
+    """
+    Smoke material for the stable fluids solver.
+    """
 
-    @property
-    def sampler(self):
-        return "regular"
+    sampler: SamplerType = "regular"

@@ -84,7 +84,7 @@ def get_device_by_index(device_id):
 
     devices = query_devices()
     if device_id >= len(devices):
-        raise ValueError("Invalid device ID ({})".format(device_id, len(devices)))
+        raise ValueError("Invalid device ID ({}) with {} devices".format(device_id, len(devices)))
     return devices[device_id]
 
 
@@ -117,7 +117,7 @@ class EGLPlatform(Platform):
     """Renders using EGL."""
 
     def __init__(self, viewport_width, viewport_height, device_id: int | None = None):
-        super(EGLPlatform, self).__init__(viewport_width, viewport_height)
+        super().__init__(viewport_width, viewport_height)
         if _eglQueryDevicesEXT is None and device_id not in (0, None):
             raise RuntimeError("EGL platform plugin is not available. Enforcing specific EGL device not supported.")
         self._egl_device_id = device_id
@@ -129,6 +129,7 @@ class EGLPlatform(Platform):
         _ensure_egl_loaded()
         from OpenGL.EGL import (
             EGL_SURFACE_TYPE,
+            EGL_NO_SURFACE,
             EGL_PBUFFER_BIT,
             EGL_BLUE_SIZE,
             EGL_RED_SIZE,
@@ -140,18 +141,17 @@ class EGLPlatform(Platform):
             EGL_OPENGL_BIT,
             EGL_CONFORMANT,
             EGL_NONE,
-            EGL_DEFAULT_DISPLAY,
             EGL_NO_CONTEXT,
             EGL_OPENGL_API,
             EGL_CONTEXT_MAJOR_VERSION,
             EGL_CONTEXT_MINOR_VERSION,
             EGL_CONTEXT_OPENGL_PROFILE_MASK,
             EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
-            eglGetDisplay,
             eglInitialize,
             eglChooseConfig,
             eglBindAPI,
             eglCreateContext,
+            eglMakeCurrent,
             EGLConfig,
             EGLError,
         )
@@ -230,6 +230,9 @@ class EGLPlatform(Platform):
 
                 # Create an EGL context
                 egl_context = eglCreateContext(egl_display, configs[0], EGL_NO_CONTEXT, context_attributes)
+
+                # Select EGL context
+                assert eglMakeCurrent(egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, egl_context)
 
                 break
             except (AssertionError, EGLError) as e:

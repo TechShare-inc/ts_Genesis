@@ -1,4 +1,3 @@
-import time
 import argparse
 import numpy as np
 import genesis as gs
@@ -73,7 +72,6 @@ def main():
                 vec=link_acc.tolist(),
             )
         print(link_acc, link_acc.norm())
-        time.sleep(0.1)
 
 
 if __name__ == "__main__":

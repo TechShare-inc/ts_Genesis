@@ -1,7 +1,5 @@
 import argparse
 import multiprocessing
-import os
-import threading
 from functools import partial
 
 import tkinter as tk
@@ -9,8 +7,6 @@ from tkinter import ttk
 
 import numpy as np
 import torch
-from taichi._lib import core as _ti_core
-from taichi.lang import impl
 
 import genesis as gs
 
@@ -19,14 +15,15 @@ FPS = 60
 
 
 class JointControlGUI:
-    def __init__(self, master, motors_name, motors_position_limit, motors_position):
+    def __init__(self, master, display_items, motors_position_limit, motors_position):
         self.master = master
         self.master.title("Joint Controller")  # Set the window title
-        self.motors_name = motors_name
+        self.display_items = display_items
         self.motors_position_limit = motors_position_limit
         self.motors_position = motors_position
+        n_dofs = len(motors_position_limit)
         self.motors_default_position = np.clip(
-            np.zeros(len(motors_name)), motors_position_limit[:, 0], motors_position_limit[:, 1]
+            np.zeros(n_dofs), motors_position_limit[:, 0], motors_position_limit[:, 1]
         )
         self.sliders = []
         self.values_label = []
@@ -34,27 +31,103 @@ class JointControlGUI:
         self.reset_motors_position()
 
     def create_widgets(self):
-        for i_m, name in enumerate(self.motors_name):
-            self.update_joint_position(i_m, self.motors_default_position[i_m])
-            min_limit, max_limit = map(float, self.motors_position_limit[i_m])
-            frame = tk.Frame(self.master)
+        container = tk.Frame(self.master)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        canvas = tk.Canvas(container, borderwidth=0, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient=tk.VERTICAL)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        def on_yscrollcommand(*args):
+            canvas.update_idletasks()
+            top, bot = canvas.yview()
+            if top < 0:
+                canvas.yview_moveto(0)
+            scrollbar.set(*canvas.yview())
+
+        canvas.configure(yscrollcommand=on_yscrollcommand)
+        scrollbar.configure(command=canvas.yview)
+
+        scrollable_frame = tk.Frame(canvas)
+        window_id = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+
+        def update_scroll_region_and_bar():
+            bbox = canvas.bbox("all")
+            if bbox:
+                w = max(bbox[2] - bbox[0], 1)
+                h = max(bbox[3] - bbox[1], 1)
+                canvas.configure(scrollregion=(0, 0, w, h))
+                content_h = h
+                canvas.update_idletasks()
+                canvas_h = canvas.winfo_height()
+                if content_h > canvas_h:
+                    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+                else:
+                    scrollbar.pack_forget()
+                    canvas.yview_moveto(0)
+
+        def on_frame_configure(event):
+            update_scroll_region_and_bar()
+
+        def on_canvas_configure(event):
+            canvas.itemconfig(window_id, width=event.width)
+            update_scroll_region_and_bar()
+
+        scrollable_frame.bind("<Configure>", on_frame_configure)
+        canvas.bind("<Configure>", on_canvas_configure)
+
+        def on_mousewheel(event):
+            if not event.delta:
+                return
+            canvas.update_idletasks()
+            if not scrollbar.winfo_ismapped():
+                return
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            if canvas.yview()[0] < 0:
+                canvas.yview_moveto(0)
+
+        def on_linux_scroll(event):
+            canvas.update_idletasks()
+            if not scrollbar.winfo_ismapped():
+                return
+            if event.num == 4:
+                canvas.yview_scroll(-1, "units")
+            elif event.num == 5:
+                canvas.yview_scroll(1, "units")
+            if canvas.yview()[0] < 0:
+                canvas.yview_moveto(0)
+
+        canvas.bind_all("<MouseWheel>", on_mousewheel)
+        canvas.bind_all("<Button-4>", on_linux_scroll)
+        canvas.bind_all("<Button-5>", on_linux_scroll)
+
+        slider_idx = 0
+        for label, is_delimiter in self.display_items:
+            frame = tk.Frame(scrollable_frame)
+            if is_delimiter:
+                frame.pack(pady=(12, 4), padx=10, fill=tk.X)
+                sep = ttk.Separator(scrollable_frame, orient=tk.HORIZONTAL)
+                sep.pack(fill=tk.X, padx=10, pady=(0, 2))
+                tk.Label(frame, text=label, font=("Arial", 12, "bold")).pack()
+                continue
             frame.pack(pady=5, padx=10, fill=tk.X)
-
-            tk.Label(frame, text=f"{name}", font=("Arial", 12), width=20).pack(side=tk.LEFT)
-
+            self.update_joint_position(slider_idx, self.motors_default_position[slider_idx])
+            min_limit, max_limit = map(float, self.motors_position_limit[slider_idx])
+            tk.Label(frame, text=label, font=("Arial", 12), anchor=tk.W).pack(side=tk.LEFT)
+            value_label = tk.Label(frame, text="0.00", font=("Arial", 12))
+            value_label.pack(side=tk.RIGHT, padx=(5, 0))
             slider = ttk.Scale(
                 frame,
                 from_=min_limit,
                 to=max_limit,
                 orient=tk.HORIZONTAL,
-                length=300,
-                command=partial(self.update_joint_position, i_m),
+                command=partial(self.update_joint_position, slider_idx),
             )
-            slider.pack(side=tk.LEFT, padx=5)
+            slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+            slider.set(self.motors_default_position[slider_idx])
+            value_label.config(text=f"{slider.get():.2f}")
             self.sliders.append(slider)
-
-            value_label = tk.Label(frame, text=f"{slider.get():.2f}", font=("Arial", 12))
-            value_label.pack(side=tk.LEFT, padx=5)
             self.values_label.append(value_label)
 
             # Update label dynamically
@@ -65,8 +138,9 @@ class JointControlGUI:
                 return callback
 
             slider.bind("<Motion>", update_label())
+            slider_idx += 1
 
-        tk.Button(self.master, text="Reset", font=("Arial", 12), command=self.reset_motors_position).pack(pady=20)
+        tk.Button(scrollable_frame, text="Reset", font=("Arial", 12), command=self.reset_motors_position).pack(pady=20)
 
     def update_joint_position(self, idx, val):
         self.motors_position[idx] = float(val)
@@ -91,19 +165,42 @@ def get_motors_info(robot):
             if len(dofs_idx_local) == 1:
                 dofs_name = [joint.name]
             else:
-                dofs_name = [f"{joint.name}_{i_d}" for i_d in range(dofs_idx_local)]
+                dofs_name = [f"{joint.name}_{i_d}" for i_d in dofs_idx_local]
             motors_dof_idx += dofs_idx_local
             motors_dof_name += dofs_name
     return motors_dof_idx, motors_dof_name
 
 
-def clean():
-    print("Cleaned up all genesis and taichi cache files...")
-    gs.utils.misc.clean_cache_files()
-    _ti_core.clean_offline_cache_files(os.path.abspath(impl.default_cfg().offline_cache_file_path))
+def get_motors_info_for_view(entities):
+    if not hasattr(entities, "__iter__") or hasattr(entities, "joints"):
+        entities = [entities]
+    entity_specs = []
+    for entity in entities:
+        motors_dof_idx, motors_dof_name = get_motors_info(entity)
+        if motors_dof_idx:
+            entity_specs.append((entity, motors_dof_idx, motors_dof_name))
+    if not entity_specs:
+        return [], [], np.zeros((0, 2), dtype=np.float64)
+
+    display_items = []
+    all_limits = []
+    entity_dof_specs = []
+    n_entities_in_scene = len(entities)
+    for i, (entity, dofs_idx, names) in enumerate(entity_specs):
+        if n_entities_in_scene > 1:
+            display_items.append((f"——— {entity.name} ———", True))
+        for name in names:
+            display_items.append((name, False))
+        entity_dof_specs.append((entity, dofs_idx))
+        limits = torch.stack(entity.get_dofs_limit(dofs_idx), dim=1).numpy()
+        limits[limits == -np.inf] = -np.pi
+        limits[limits == np.inf] = np.pi
+        all_limits.append(limits)
+    motors_position_limit = np.vstack(all_limits)
+    return display_items, entity_dof_specs, motors_position_limit
 
 
-def _start_gui(motors_name, motors_position_limit, motors_position, stop_event):
+def _start_gui(display_items, motors_position_limit, motors_position, stop_event):
     def on_close():
         nonlocal after_id
         if after_id is not None:
@@ -114,7 +211,18 @@ def _start_gui(motors_name, motors_position_limit, motors_position, stop_event):
         root.quit()
 
     root = tk.Tk()
-    app = JointControlGUI(root, motors_name, motors_position_limit, motors_position)
+    root.minsize(520, 400)
+
+    # Size window so content fits without vertical scroll when possible
+    row_heights = [50 if is_delimiter else 36 for _, is_delimiter in display_items]
+    content_h = sum(row_heights) + 100  # + reset button and padding
+    screen_h = root.winfo_screenheight()
+    height = min(content_h, max(400, screen_h - 120))
+    root.geometry(f"560x{height}")
+
+    # Store joint control gui to make sure it does not get garbage collected, just in case, because it may break tkinter
+    _app = JointControlGUI(root, display_items, motors_position_limit, motors_position)
+
     root.protocol("WM_DELETE_WINDOW", on_close)
 
     def check_event():
@@ -132,9 +240,6 @@ def view(filename, collision, rotate, scale=1.0, show_link_frame=False):
     gs.init(backend=gs.cpu)
 
     scene = gs.Scene(
-        sim_options=gs.options.SimOptions(
-            gravity=(0.0, 0.0, 0.0),
-        ),
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(3.5, 0.0, 2.5),
             camera_lookat=(0.0, 0.0, 0.5),
@@ -143,56 +248,94 @@ def view(filename, collision, rotate, scale=1.0, show_link_frame=False):
         ),
         vis_options=gs.options.VisOptions(
             show_link_frame=show_link_frame,
+            show_world_frame=True,
         ),
+        show_viewer=True,
     )
 
-    if filename.endswith(".urdf"):
+    filename_lower = filename.lower()
+    morphs = gs.options.morphs
+    material = gs.materials.Kinematic()
+    surface = gs.surfaces.Default(vis_mode="visual" if not collision else "collision")
+
+    if filename_lower.endswith(morphs.USD_FORMATS):
+        morph = gs.morphs.USD(file=filename, collision=collision, scale=scale)
+        entities = scene.add_stage(morph=morph, vis_mode=surface.vis_mode)
+    elif filename_lower.endswith(morphs.URDF_FORMAT):
         morph_cls = gs.morphs.URDF
-    elif filename.endswith(".xml"):
+        entities = [
+            scene.add_entity(
+                morph_cls(file=filename, collision=collision, scale=scale),
+                material=material,
+                surface=surface,
+            )
+        ]
+    elif filename_lower.endswith(morphs.MJCF_FORMAT):
         morph_cls = gs.morphs.MJCF
-    else:
+        entities = [
+            scene.add_entity(
+                morph_cls(file=filename, collision=collision, scale=scale),
+                material=material,
+                surface=surface,
+            )
+        ]
+    elif filename_lower.endswith(morphs.MESH_FORMATS):
         morph_cls = gs.morphs.Mesh
-    entity = scene.add_entity(
-        morph_cls(file=filename, collision=collision, scale=scale),
-        surface=gs.surfaces.Default(
-            vis_mode="visual" if not collision else "collision",
-        ),
-    )
+        entities = [
+            scene.add_entity(
+                morph_cls(file=filename, collision=collision, scale=scale),
+                material=material,
+                surface=surface,
+            )
+        ]
+    else:
+        gs.raise_exception(
+            f"Unsupported file format for 'gs view'. Expected {morphs.URDF_FORMAT}, "
+            f"{morphs.MJCF_FORMAT}, {morphs.MESH_FORMATS}, or {morphs.USD_FORMATS}."
+        )
+
     scene.build(compile_kernels=False)
 
-    # Get motor info
-    motors_dof_idx, motors_name = get_motors_info(entity)
-
-    # Get motor position limits.
-    # Makes sure that all joints are bounded, included revolute joints.
-    motors_position_limit = torch.stack(entity.get_dofs_limit(motors_dof_idx), dim=1).numpy()
-    motors_position_limit[motors_position_limit == -np.inf] = -np.pi
-    motors_position_limit[motors_position_limit == +np.inf] = +np.pi
+    display_items, entity_dof_specs, motors_position_limit = get_motors_info_for_view(entities)
+    total_dofs = len(motors_position_limit)
 
     # Start the GUI process
-    manager = multiprocessing.Manager()
-    motors_position = manager.list([0.0 for _ in motors_dof_idx])
-    stop_event = multiprocessing.Event()
-    gui_process = multiprocessing.Process(
-        target=_start_gui, args=(motors_name, motors_position_limit, motors_position, stop_event), daemon=True
-    )
-    gui_process.start()
+    if total_dofs > 0:
+        manager = multiprocessing.Manager()
+        motors_position = manager.list([0.0] * total_dofs)
+        stop_event = multiprocessing.Event()
+        gui_process = multiprocessing.Process(
+            target=_start_gui,
+            args=(display_items, motors_position_limit, motors_position, stop_event),
+            daemon=True,
+        )
+        gui_process.start()
+    else:
+        stop_event = multiprocessing.Event()
 
     t = 0
     while scene.viewer.is_alive() and not stop_event.is_set():
         # Rotate entity if requested
         if rotate:
             t += 1 / FPS
-            entity.set_quat(gs.utils.geom.xyz_to_quat(np.array([0, 0, t * 50]), rpy=True, degrees=True))
+            quat = gs.utils.geom.xyz_to_quat(np.array([0, 0, t * 50]), rpy=True, degrees=True)
+            for entity in entities:
+                entity.set_quat(quat)
 
-        entity.set_dofs_position(
-            position=torch.tensor(motors_position),
-            dofs_idx_local=motors_dof_idx,
-            zero_velocity=True,
-        )
+        if total_dofs > 0:
+            offset = 0
+            for entity, dofs_idx in entity_dof_specs:
+                n = len(dofs_idx)
+                entity.set_dofs_position(
+                    position=torch.tensor(motors_position[offset : offset + n]),
+                    dofs_idx_local=dofs_idx,
+                    zero_velocity=True,
+                )
+                offset += n
         scene.visualizer.update(force=True)
     stop_event.set()
-    gui_process.join()
+    if total_dofs > 0:
+        gui_process.join()
 
 
 def animate(filename_pattern, fps):
@@ -213,9 +356,7 @@ def main():
     parser = argparse.ArgumentParser(description="Genesis CLI")
     subparsers = parser.add_subparsers(dest="command")
 
-    parser_clean = subparsers.add_parser("clean", help="Clean all the files cached by genesis and taichi")
-
-    parser_view = subparsers.add_parser("view", help="Visualize a given asset (mesh/URDF/MJCF)")
+    parser_view = subparsers.add_parser("view", help="Visualize a given asset (Mesh/URDF/MJCF/USD)")
     parser_view.add_argument("filename", type=str, help="File to visualize")
     parser_view.add_argument(
         "-c", "--collision", action="store_true", default=False, help="Whether to visualize collision geometry"
@@ -230,13 +371,11 @@ def main():
 
     args = parser.parse_args()
 
-    if args.command == "clean":
-        clean()
-    elif args.command == "view":
+    if args.command == "view":
         view(args.filename, args.collision, args.rotate, args.scale, args.link_frame)
     elif args.command == "animate":
         animate(args.filename_pattern, args.fps)
-    elif args.command == None:
+    elif args.command is None:
         parser.print_help()
 
 

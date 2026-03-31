@@ -11,7 +11,6 @@ config = {
 
 
 def main():
-
     parser = argparse.ArgumentParser()
     parser.add_argument("-v", "--vis", action="store_true", default=False)
     parser.add_argument("-c", "--cpu", action="store_true", default=False)
@@ -32,12 +31,12 @@ def main():
             camera_fov=40,
             max_FPS=200,
         ),
-        show_viewer=args.vis,
         rigid_options=gs.options.RigidOptions(
             enable_joint_limit=False,
             enable_collision=False,
             gravity=(0, 0, -0),
         ),
+        show_viewer=args.vis,
         show_FPS=False,
     )
 
