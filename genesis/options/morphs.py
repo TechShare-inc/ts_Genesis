@@ -1265,6 +1265,9 @@ class Terrain(Morph):
         "wave_terrain",
         "stairs_terrain",
         "pyramid_stairs_terrain",
+        "pyramid_stairs_terrain_1",
+        "pyramid_stairs_terrain_2",
+        "pyramid_stairs_terrain_3",
         "stepping_stones_terrain",
     )
 
@@ -1326,8 +1329,8 @@ class Terrain(Morph):
         return {
             "flat_terrain": {},
             "fractal_terrain": {
-                "levels": 8,
-                "scale": 5.0,
+                "levels": 3, # 8,
+                "scale": .1, # 5.0,
             },
             "random_uniform_terrain": {
                 "min_height": -0.1,
@@ -1358,6 +1361,21 @@ class Terrain(Morph):
             "pyramid_stairs_terrain": {
                 "step_width": 0.75,
                 "step_height": -0.1,
+            },
+            "pyramid_stairs_terrain_1": {
+                "step_width": 0.3,
+                "center_width": 1.4, # 0.8,
+                "step_height": -0.05,
+            },
+            "pyramid_stairs_terrain_2": {
+                "step_width": 0.3,
+                "center_width": 1.4, # 0.8,
+                "step_height": -0.1,
+            },
+            "pyramid_stairs_terrain_3": {
+                "step_width": 0.3,
+                "center_width": 1.4, # 0.8,
+                "step_height": -0.15,
             },
             "stepping_stones_terrain": {
                 "stone_size": 1.0,

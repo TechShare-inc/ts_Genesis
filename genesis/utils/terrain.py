@@ -136,6 +136,27 @@ def parse_terrain(morph: Terrain, surface):
                     step_width=params.get("step_width", 0.75),
                     step_height=params.get("step_height", -0.1),
                 )
+            elif subterrain_type == "pyramid_stairs_terrain_1":
+                subterrain = isaacgym_terrain_utils.pyramid_stairs_terrain_(
+                    new_subterrain,
+                    step_width=params.get("step_width", 0.3),
+                    center_width=params.get("center_width", 0.8),
+                    step_height=params.get("step_height", -0.05),
+                )
+            elif subterrain_type == "pyramid_stairs_terrain_2":
+                subterrain = isaacgym_terrain_utils.pyramid_stairs_terrain_(
+                    new_subterrain,
+                    step_width=params.get("step_width", 0.3),
+                    center_width=params.get("center_width", 0.8),
+                    step_height=params.get("step_height", -0.1),
+                )
+            elif subterrain_type == "pyramid_stairs_terrain_3":
+                subterrain = isaacgym_terrain_utils.pyramid_stairs_terrain_(
+                    new_subterrain,
+                    step_width=params.get("step_width", 0.3),
+                    center_width=params.get("center_width", 0.8),
+                    step_height=params.get("step_height", -0.15),
+                )
             elif subterrain_type == "stepping_stones_terrain":
                 subterrain = isaacgym_terrain_utils.stepping_stones_terrain(
                     new_subterrain,

@@ -262,6 +262,64 @@ def pyramid_stairs_terrain(terrain, step_width, step_height, platform_size=1.0):
         terrain.height_field_raw[start_x:stop_x, start_y:stop_y] = height
     return terrain
 
+def pyramid_stairs_terrain_(terrain, step_width, center_width, step_height):
+    """
+    Generate stairs
+
+    Parameters:
+        terrain (terrain): the terrain
+        step_width (float):  the width of the step [meters]
+        center_width (float):  the width of the center step [meters]
+        step_height (float): the step_height [meters]
+        platform_size (float): size of the flat platform at the center of the terrain [meters]
+    Returns:
+        terrain (SubTerrain): update terrain
+    """
+    # switch parameters to discrete units
+    nx, ny = terrain.height_field_raw.shape
+    print("nx, ny: ", nx, ny)
+    step_width = int(step_width / terrain.horizontal_scale)
+    center_width = int(center_width / terrain.horizontal_scale)
+    step_height = int(step_height / terrain.vertical_scale)
+    
+    # terrain_width  = int(terrain.width / terrain.horizontal_scale)
+    # terrain_length  = int(terrain.length / terrain.horizontal_scale)
+    terrain_width  = int(terrain.width)
+    terrain_length  = int(terrain.length)
+    
+    print("terrain width: ", terrain_width)
+
+    center_half_width = center_width // 2
+    center_x = terrain_width // 2
+    center_y = terrain_length // 2
+
+    height = step_height
+    start_x = center_x - center_half_width
+    stop_x = center_x + center_half_width
+    start_y = center_y - center_half_width
+    stop_y = center_y + center_half_width
+    
+    # print("start_x: ", start_x)
+    # print("stop_x: ", stop_x)
+    # print("start_y: ", start_y)
+    # print("stop_y: ", stop_y)
+
+    
+    # terrain.height_field_raw[start_x-1:stop_x+1, :] += height
+    # terrain.height_field_raw[:, start_y-1:stop_y+1] += height
+    
+    while start_x > 0 and start_y > 0 and stop_x < terrain_width and stop_y < terrain_length:
+        terrain.height_field_raw[start_x:stop_x, start_y:stop_y] += height
+        start_x -= step_width
+        stop_x += step_width
+        start_y -= step_width
+        stop_y += step_width
+        # print("start_x: ", start_x)
+        # print("stop_x: ", stop_x)
+        # print("start_y: ", start_y)
+        # print("stop_y: ", stop_y)
+        
+    return terrain
 
 def stepping_stones_terrain(terrain, stone_size, stone_distance, max_height, platform_size=1.0, depth=-10):
     """
