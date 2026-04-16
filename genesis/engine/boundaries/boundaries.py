@@ -1,12 +1,14 @@
+import copy
+
 import numpy as np
-import quadrants as qd
+import gstaichi as ti
 
 import genesis as gs
 from genesis.utils.misc import *
 from genesis.utils.repr import brief
 
 
-@qd.data_oriented
+@ti.data_oriented
 class CubeBoundary:
     def __init__(self, lower, upper, restitution=0.0):
         self.restitution = restitution
@@ -15,24 +17,24 @@ class CubeBoundary:
         self.lower = np.array(lower, dtype=gs.np_float)
         assert (self.upper >= self.lower).all()
 
-        self.upper_qd = qd.Vector(upper, dt=gs.qd_float)
-        self.lower_qd = qd.Vector(lower, dt=gs.qd_float)
+        self.upper_ti = ti.Vector(upper, dt=gs.ti_float)
+        self.lower_ti = ti.Vector(lower, dt=gs.ti_float)
 
-    @qd.func
+    @ti.func
     def impose_pos_vel(self, pos, vel):
-        for i in qd.static(range(3)):
-            if pos[i] >= self.upper_qd[i] and vel[i] >= 0:
+        for i in ti.static(range(3)):
+            if pos[i] >= self.upper_ti[i] and vel[i] >= 0:
                 vel[i] *= -self.restitution
-            elif pos[i] <= self.lower_qd[i] and vel[i] <= 0:
+            elif pos[i] <= self.lower_ti[i] and vel[i] <= 0:
                 vel[i] *= -self.restitution
 
-        pos = qd.max(qd.min(pos, self.upper_qd), self.lower_qd)
+        pos = ti.max(ti.min(pos, self.upper_ti), self.lower_ti)
 
         return pos, vel
 
-    @qd.func
+    @ti.func
     def impose_pos(self, pos):
-        pos = qd.max(qd.min(pos, self.upper_qd), self.lower_qd)
+        pos = ti.max(ti.min(pos, self.upper_ti), self.lower_ti)
         return pos
 
     def is_inside(self, pos):
@@ -47,25 +49,25 @@ class CubeBoundary:
         )
 
 
-@qd.data_oriented
+@ti.data_oriented
 class FloorBoundary:
     def __init__(self, height, restitution=0.0):
         self.height = height
         self.restitution = restitution
 
-    @qd.func
+    @ti.func
     def impose_pos_vel(self, pos, vel):
         if pos[2] <= self.height and vel[2] <= 0:
             vel[2] *= -self.restitution
 
-        pos[2] = qd.max(pos[2], self.height)
+        pos[2] = ti.max(pos[2], self.height)
 
         return pos, vel
 
-    @qd.func
+    @ti.func
     def impose_pos(self, pos):
-        pos[2] = qd.max(pos[2], self.height)
+        pos[2] = ti.max(pos[2], self.height)
         return pos
 
     def __repr__(self):
-        return f"{brief(self)}\nheight      : {brief(self.height)}\nrestitution : {brief(self.restitution)}"
+        return f"{brief(self)}\n" f"height      : {brief(self.height)}\n" f"restitution : {brief(self.restitution)}"

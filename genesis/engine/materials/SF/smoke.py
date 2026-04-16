@@ -1,13 +1,13 @@
-from typing import Literal
+import gstaichi as ti
 
 from .base import Base
 
-SamplerType = Literal["pbs", "random", "regular"]
 
-
+@ti.data_oriented
 class Smoke(Base):
-    """
-    Smoke material for the stable fluids solver.
-    """
+    def __init__(self):
+        super().__init__()
 
-    sampler: SamplerType = "regular"
+    @property
+    def sampler(self):
+        return "regular"

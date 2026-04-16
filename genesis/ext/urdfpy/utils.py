@@ -132,7 +132,7 @@ def xyz_rpy_to_matrix(xyz_rpy):
     return matrix
 
 
-def parse_origin(node, *, default):
+def parse_origin(node):
     """Find the ``origin`` subelement of an XML node and convert it
     into a 4x4 homogenous transformation matrix.
 
@@ -149,11 +149,8 @@ def parse_origin(node, *, default):
         ``origin`` child. Defaults to the identity matrix if no ``origin``
         child was found.
     """
-    origin_node = node.find("origin")
-    if not default and origin_node is None:
-        return
-
     matrix = np.eye(4, dtype=np.float64)
+    origin_node = node.find("origin")
     if origin_node is not None:
         if "xyz" in origin_node.attrib:
             matrix[:3, 3] = np.fromstring(origin_node.attrib["xyz"], sep=" ")
@@ -276,7 +273,7 @@ def load_meshes(filename):
     return meshes
 
 
-def configure_origin(value, *, default):
+def configure_origin(value):
     """Convert a value into a 4x4 transform matrix.
 
     Parameters
@@ -291,13 +288,13 @@ def configure_origin(value, *, default):
         The created matrix.
     """
     if value is None:
-        return np.eye(4, dtype=np.float64) if default else None
-    if isinstance(value, (list, tuple, np.ndarray)):
+        value = np.eye(4, dtype=np.float64)
+    elif isinstance(value, (list, tuple, np.ndarray)):
         value = np.asanyarray(value, dtype=np.float64)
         if value.shape == (6,):
             value = xyz_rpy_to_matrix(value)
         elif value.shape != (4, 4):
-            raise ValueError("Origin must be specified as a 4x4 homogenous transformation matrix")
+            raise ValueError("Origin must be specified as a 4x4 " "homogenous transformation matrix")
     else:
         raise TypeError("Invalid type for origin, expect 4x4 matrix")
     return value

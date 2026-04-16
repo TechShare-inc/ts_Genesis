@@ -1,9 +1,10 @@
 import inspect
 import os
+import threading
 import time
 
 import numpy as np
-import quadrants as qd
+import gstaichi as ti
 from PIL import Image
 
 import genesis as gs
@@ -25,7 +26,7 @@ def animate(imgs, filename=None, fps=60):
     if filename is None:
         caller_file = inspect.stack()[-1].filename
         # caller file + timestamp + .mp4
-        filename = os.path.splitext(os.path.basename(caller_file))[0] + f"_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
+        filename = os.path.splitext(os.path.basename(caller_file))[0] + f'_{time.strftime("%Y%m%d_%H%M%S")}.mp4'
     os.makedirs(os.path.abspath(os.path.dirname(filename)), exist_ok=True)
 
     gs.logger.info(f'Saving video to ~<"{filename}">~...')
@@ -52,11 +53,11 @@ def save_img_arr(arr, filename="img.png"):
 
 
 class Timer:
-    def __init__(self, skip=False, level=0, qd_sync=False):
+    def __init__(self, skip=False, level=0, ti_sync=False):
         self.accu_log = dict()
         self.skip = skip
         self.level = level
-        self.qd_sync = qd_sync
+        self.ti_sync = ti_sync
         self.msg_width = 0
         self.reset()
 
@@ -68,16 +69,16 @@ class Timer:
             except OSError:
                 column = 80
             print("─" * column)
-        if self.qd_sync and not self.skip:
-            qd.sync()
+        if self.ti_sync and not self.skip:
+            ti.sync()
         self.prev_time = self.init_time = time.perf_counter()
 
     def _stamp(self, msg="", _ratio=1.0):
         if self.skip:
             return
 
-        if self.qd_sync:
-            qd.sync()
+        if self.ti_sync:
+            ti.sync()
 
         self.cur_time = time.perf_counter()
         self.msg_width = max(self.msg_width, len(msg))
@@ -101,7 +102,7 @@ class Timer:
             prefix = ""
 
         print(
-            f"{prefix}[{msg.ljust(self.msg_width)}] step: {step_time:5.3f}ms | accu: {accu_time:5.3f}ms | step_avg: {self.accu_log[msg][1] / self.accu_log[msg][0]:5.3f}ms | accu_avg: {self.accu_log[msg][2] / self.accu_log[msg][0]:5.3f}ms"
+            f"{prefix}[{msg.ljust(self.msg_width)}] step: {step_time:5.3f}ms | accu: {accu_time:5.3f}ms | step_avg: {self.accu_log[msg][1]/self.accu_log[msg][0]:5.3f}ms | accu_avg: {self.accu_log[msg][2]/self.accu_log[msg][0]:5.3f}ms"
         )
 
         self.prev_time = time.perf_counter()
@@ -112,8 +113,8 @@ class Timer:
         if self.skip:
             return
 
-        if self.qd_sync:
-            qd.sync()
+        if self.ti_sync:
+            ti.sync()
 
         self.cur_time = time.perf_counter()
         self.msg_width = max(self.msg_width, len(msg))
@@ -137,7 +138,7 @@ class Timer:
             prefix = ""
 
         print(
-            f"{prefix}[{msg.ljust(self.msg_width)}] step: {step_time:5.3f}ms | accu: {accu_time:5.3f}ms | step_avg: {self.accu_log[msg][1] / self.accu_log[msg][0]:5.3f}ms | accu_avg: {self.accu_log[msg][2] / self.accu_log[msg][0]:5.3f}ms"
+            f"{prefix}[{msg.ljust(self.msg_width)}] step: {step_time:5.3f}ms | accu: {accu_time:5.3f}ms | step_avg: {self.accu_log[msg][1]/self.accu_log[msg][0]:5.3f}ms | accu_avg: {self.accu_log[msg][2]/self.accu_log[msg][0]:5.3f}ms"
         )
 
         self.prev_time = time.perf_counter()
@@ -147,7 +148,7 @@ class Timer:
 timers = dict()
 
 
-def create_timer(name=None, new=False, level=0, qd_sync=False, skip_first_call=False):
+def create_timer(name=None, new=False, level=0, ti_sync=False, skip_first_call=False):
     if name is None:
         return Timer()
     else:
@@ -157,7 +158,7 @@ def create_timer(name=None, new=False, level=0, qd_sync=False, skip_first_call=F
             timer.reset()
             return timer
         else:
-            timer = Timer(skip=skip_first_call, level=level, qd_sync=qd_sync)
+            timer = Timer(skip=skip_first_call, level=level, ti_sync=ti_sync)
             timers[name] = timer
             return timer
 

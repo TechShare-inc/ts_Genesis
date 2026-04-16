@@ -10,7 +10,8 @@ from OpenGL.GL import *
 import genesis as gs
 
 from .constants import RenderFlags
-from .shader_program import ShaderProgram
+from .renderer import Renderer
+from .shader_program import ShaderProgram, ShaderProgramCache
 
 
 MODULE_DIR = os.path.dirname(__file__)
@@ -75,7 +76,8 @@ class OffscreenRenderer(object):
 
         self._platform.make_current()
 
-        # If platform does not support dynamically-resizing framebuffers, destroy it and restart it
+        # If platform does not support dynamically-resizing framebuffers,
+        # destroy it and restart it
         if (
             self._platform.viewport_height != self.viewport_height
             or self._platform.viewport_width != self.viewport_width
@@ -111,7 +113,6 @@ class OffscreenRenderer(object):
         shadow=False,
         plane_reflection=False,
         env_separate_rigid=False,
-        skip_markers=False,
     ):
         """Render a scene with the given set of flags.
 
@@ -156,9 +157,6 @@ class OffscreenRenderer(object):
         if env_separate_rigid:
             flags |= RenderFlags.ENV_SEPARATE
 
-        if skip_markers:
-            flags |= RenderFlags.SKIP_MARKERS
-
         if seg:
             seg_node_map = self._seg_node_map
             flags |= RenderFlags.SEG
@@ -172,12 +170,10 @@ class OffscreenRenderer(object):
             if self._platform.supports_framebuffers():
                 flags |= RenderFlags.OFFSCREEN
                 retval = renderer.render(scene, flags, seg_node_map)
-                assert retval is not None
             else:
                 if flags & RenderFlags.ENV_SEPARATE:
                     gs.raise_exception("'env_separate_rigid=True' not supported on this platform.")
-                result = renderer.render(scene, flags, seg_node_map)
-                assert result is not None
+                renderer.render(scene, flags, seg_node_map)
                 glBindFramebuffer(GL_READ_FRAMEBUFFER, 0)
                 glReadBuffer(GL_FRONT)
                 if depth:
@@ -197,7 +193,6 @@ class OffscreenRenderer(object):
             retval = ()
 
         if normal:
-
             class CustomShaderCache:
                 def __init__(self):
                     self.program = None
@@ -217,8 +212,6 @@ class OffscreenRenderer(object):
             flags = RenderFlags.FLAT | RenderFlags.OFFSCREEN
             if env_separate_rigid:
                 flags |= RenderFlags.ENV_SEPARATE
-            if skip_markers:
-                flags |= RenderFlags.SKIP_MARKERS
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
             if self._platform.supports_framebuffers():
@@ -266,22 +259,20 @@ class OffscreenRenderer(object):
         else:
             raise ValueError("Unsupported PyOpenGL platform: {}".format(platform))
         self._platform.init_context()
-
         self._platform.make_current()
+
         try:
             from OpenGL.GL import glGetString, GL_RENDERER
 
             renderer = glGetString(GL_RENDERER).decode()
-            gs.logger.debug(f"Using offscreen rendering OpenGL device: {renderer}")
-            self._is_software = any(e in renderer for e in ("llvmpipe", "Apple Software Renderer"))
-        except Exception:
+            self._is_software = "llvmpipe" in renderer
+        except:
             pass
         if self._is_software:
             gs.logger.info(
                 "Software rendering context detected. Shadows and plane reflection not supported. Beware rendering "
                 "will be extremely slow."
             )
-        self._platform.make_uncurrent()
 
     def __del__(self):
         try:

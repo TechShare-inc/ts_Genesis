@@ -1,11 +1,11 @@
 from typing import TYPE_CHECKING
-
 import numpy as np
+import gstaichi as ti
 
 import genesis as gs
 from genesis.options.morphs import Morph
 from genesis.options.solvers import (
-    KinematicOptions,
+    AvatarOptions,
     BaseCouplerOptions,
     IPCCouplerOptions,
     LegacyCouplerOptions,
@@ -23,7 +23,7 @@ from genesis.repr_base import RBC
 
 from .entities import HybridEntity
 from .solvers import (
-    KinematicSolver,
+    AvatarSolver,
     FEMSolver,
     MPMSolver,
     PBDSolver,
@@ -47,6 +47,7 @@ if TYPE_CHECKING:
 RATE_CHECK_ERRNO = 10
 
 
+@ti.data_oriented
 class Simulator(RBC):
     """
     A simulator is a scene-level simulation manager, which manages all simulation-related operations in the scene, including multiple solvers and the inter-solver coupler.
@@ -63,6 +64,8 @@ class Simulator(RBC):
         A ToolOptions object that contains all the options for the ToolSolver.
     rigid_options : gs.RigidOptions
         A RigidOptions object that contains all the options for the RigidSolver.
+    avatar_options : gs.AvatarOptions
+        An AvatarOptions object that contains all the options for the AvatarSolver.
     mpm_options : gs.MPMOptions
         An MPMOptions object that contains all the options for the MPMSolver.
     sph_options : gs.SPHOptions
@@ -82,7 +85,7 @@ class Simulator(RBC):
         coupler_options: BaseCouplerOptions,
         tool_options: ToolOptions,
         rigid_options: RigidOptions,
-        kinematic_options: KinematicOptions,
+        avatar_options: AvatarOptions,
         mpm_options: MPMOptions,
         sph_options: SPHOptions,
         fem_options: FEMOptions,
@@ -96,7 +99,7 @@ class Simulator(RBC):
         self.coupler_options = coupler_options
         self.tool_options = tool_options
         self.rigid_options = rigid_options
-        self.kinematic_options = kinematic_options
+        self.avatar_options = avatar_options
         self.mpm_options = mpm_options
         self.sph_options = sph_options
         self.fem_options = fem_options
@@ -116,7 +119,7 @@ class Simulator(RBC):
         # solvers
         self.tool_solver = ToolSolver(self.scene, self, self.tool_options)
         self.rigid_solver = RigidSolver(self.scene, self, self.rigid_options)
-        self.kinematic_solver = KinematicSolver(self.scene, self, self.kinematic_options)
+        self.avatar_solver = AvatarSolver(self.scene, self, self.avatar_options)
         self.mpm_solver = MPMSolver(self.scene, self, self.mpm_options)
         self.sph_solver = SPHSolver(self.scene, self, self.sph_options)
         self.pbd_solver = PBDSolver(self.scene, self, self.pbd_options)
@@ -127,7 +130,7 @@ class Simulator(RBC):
             [
                 self.tool_solver,
                 self.rigid_solver,
-                self.kinematic_solver,
+                self.avatar_solver,
                 self.mpm_solver,
                 self.sph_solver,
                 self.pbd_solver,
@@ -159,28 +162,24 @@ class Simulator(RBC):
         # sensors
         self._sensor_manager = SensorManager(self)
 
-    def _add_entity(self, morph: Morph, material, surface, visualize_contact=False, name: str | None = None):
+    def _add_entity(self, morph: Morph, material, surface, visualize_contact=False):
         if isinstance(material, gs.materials.Tool):
-            entity = self.tool_solver.add_entity(self.n_entities, material, morph, surface, name=name)
+            entity = self.tool_solver.add_entity(self.n_entities, material, morph, surface)
+        elif isinstance(material, gs.materials.Avatar):
+            entity = self.avatar_solver.add_entity(self.n_entities, material, morph, surface, visualize_contact)
         elif isinstance(material, gs.materials.Rigid):
-            entity = self.rigid_solver.add_entity(
-                self.n_entities, material, morph, surface, visualize_contact, name=name
-            )
-        elif isinstance(material, gs.materials.Kinematic):
-            entity = self.kinematic_solver.add_entity(
-                self.n_entities, material, morph, surface, visualize_contact=False, name=name
-            )
+            entity = self.rigid_solver.add_entity(self.n_entities, material, morph, surface, visualize_contact)
         elif isinstance(material, gs.materials.MPM.Base):
-            entity = self.mpm_solver.add_entity(self.n_entities, material, morph, surface, name=name)
+            entity = self.mpm_solver.add_entity(self.n_entities, material, morph, surface)
         elif isinstance(material, gs.materials.SPH.Base):
-            entity = self.sph_solver.add_entity(self.n_entities, material, morph, surface, name=name)
+            entity = self.sph_solver.add_entity(self.n_entities, material, morph, surface)
         elif isinstance(material, gs.materials.PBD.Base):
-            entity = self.pbd_solver.add_entity(self.n_entities, material, morph, surface, name=name)
+            entity = self.pbd_solver.add_entity(self.n_entities, material, morph, surface)
         elif isinstance(material, gs.materials.FEM.Base):
-            entity = self.fem_solver.add_entity(self.n_entities, material, morph, surface, name=name)
+            entity = self.fem_solver.add_entity(self.n_entities, material, morph, surface)
         elif isinstance(material, gs.materials.Hybrid):
             # Note that adding to solver is handled in the hybrid entity
-            entity = HybridEntity(self.n_entities, self.scene, material, morph, surface, name=name)
+            entity = HybridEntity(self.n_entities, self.scene, material, morph, surface)
         else:
             gs.raise_exception(f"Material not supported.: {material}")
 
@@ -216,9 +215,6 @@ class Simulator(RBC):
                 entity.build()
 
         self._sensor_manager.build()
-
-    def destroy(self):
-        self._sensor_manager.destroy()
 
     def reset(self, state: SimState, envs_idx=None):
         for solver, solver_state in zip(self._solvers, state):
@@ -297,6 +293,7 @@ class Simulator(RBC):
 
     def _step_grad(self):
         for _ in range(self._substeps - 1, -1, -1):
+
             if self.cur_substep_local == 0:
                 self.load_ckpt()
             self._cur_substep_global -= 1

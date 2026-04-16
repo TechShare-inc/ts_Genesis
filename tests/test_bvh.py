@@ -31,9 +31,9 @@ def test_morton_code(lbvh):
     # Check that the morton codes are sorted
     for i_b in range(morton_codes.shape[0]):
         for i in range(1, morton_codes.shape[1]):
-            assert morton_codes[i_b, i, 0] > morton_codes[i_b, i - 1, 0], (
-                f"Morton codes are not sorted: {morton_codes[i_b, i]} < {morton_codes[i_b, i - 1]}"
-            )
+            assert (
+                morton_codes[i_b, i, 0] > morton_codes[i_b, i - 1, 0]
+            ), f"Morton codes are not sorted: {morton_codes[i_b, i]} < {morton_codes[i_b, i - 1]}"
 
 
 @pytest.mark.required
@@ -42,33 +42,33 @@ def test_expand_bits():
     Test the expand_bits function for LBVH.
     A 10-bit integer is expanded to a 30-bit integer by inserting two zeros before each bit.
     """
-    import quadrants as qd
+    import gstaichi as ti
 
-    @qd.kernel
-    def expand_bits(lbvh: qd.template(), x: qd.template(), expanded_x: qd.template()):
+    @ti.kernel
+    def expand_bits(lbvh: ti.template(), x: ti.template(), expanded_x: ti.template()):
         n_x = x.shape[0]
         for i in range(n_x):
             expanded_x[i] = lbvh.expand_bits(x[i])
 
     # random integer
     x_np = np.random.randint(0, 1024, (10,), dtype=np.uint32)
-    x_qd = qd.field(qd.uint32, shape=x_np.shape)
-    x_qd.from_numpy(x_np)
-    expanded_x_qd = qd.field(qd.uint32, shape=x_np.shape)
+    x_ti = ti.field(ti.uint32, shape=x_np.shape)
+    x_ti.from_numpy(x_np)
+    expanded_x_ti = ti.field(ti.uint32, shape=x_np.shape)
     # expand bits
     n_aabbs = 10
     n_batches = 1
     aabb = AABB(n_aabbs=n_aabbs, n_batches=n_batches)
     lbvh = LBVH(aabb)
-    expand_bits(lbvh, x_qd, expanded_x_qd)
-    expanded_x_np = expanded_x_qd.to_numpy()
+    expand_bits(lbvh, x_ti, expanded_x_ti)
+    expanded_x_np = expanded_x_ti.to_numpy()
     for i in range(x_np.shape[0]):
         str_x = f"{x_np[i]:010b}"
         str_expanded_x = f"{expanded_x_np[i]:030b}"
         # check that the expanded bits are correct
-        assert str_expanded_x == "".join(f"00{bit}" for bit in str_x), (
-            f"Expected {str_expanded_x}, got {''.join(f'00{bit}' for bit in str_x)}"
-        )
+        assert str_expanded_x == "".join(
+            f"00{bit}" for bit in str_x
+        ), f"Expected {str_expanded_x}, got {''.join(f'00{bit}' for bit in str_x)}"
 
 
 @pytest.mark.required
@@ -91,19 +91,19 @@ def test_build_tree(lbvh):
                 assert parent == -1
 
             else:
-                assert nodes["left"][j, parent] == i or nodes["right"][j, parent] == i, (
-                    f"Node {i} in batch {j} has incorrect parent: {parent}"
-                )
+                assert (
+                    nodes["left"][j, parent] == i or nodes["right"][j, parent] == i
+                ), f"Node {i} in batch {j} has incorrect parent: {parent}"
 
             # Check that left and right children are correct
             if left != -1:
-                assert nodes["parent"][j, left] == i, (
-                    f"Left child {left} of node {i} in batch {j} has incorrect parent: {nodes['parent'][j, left]}, expected {i}"
-                )
+                assert (
+                    nodes["parent"][j, left] == i
+                ), f"Left child {left} of node {i} in batch {j} has incorrect parent: {nodes['parent'][j, left]}, expected {i}"
             if right != -1:
-                assert nodes["parent"][j, right] == i, (
-                    f"Right child {right} of node {i} in batch {j} has incorrect parent: {nodes['parent'][j, right]}, expected {i}"
-                )
+                assert (
+                    nodes["parent"][j, right] == i
+                ), f"Right child {right} of node {i} in batch {j} has incorrect parent: {nodes['parent'][j, right]}, expected {i}"
 
             if left != -1 and right != -1:
                 # Check that the AABBs of the children are within the AABB of the parent
@@ -124,10 +124,10 @@ def test_build_tree(lbvh):
 @pytest.mark.parametrize("n_aabbs, n_batches", [(500, 10), (5, 1)])
 @pytest.mark.parametrize("backend", [gs.cpu, gs.gpu])
 def test_query(lbvh):
-    import quadrants as qd
+    import gstaichi as ti
 
-    @qd.kernel
-    def query_kernel(lbvh: qd.template(), aabbs: qd.template()):
+    @ti.kernel
+    def query_kernel(lbvh: ti.template(), aabbs: ti.template()):
         lbvh.query(aabbs)
 
     aabbs = lbvh.aabbs
@@ -155,6 +155,6 @@ def test_query(lbvh):
                 if i_a == j_a:
                     assert intersect[i_b, i_a, j_a] == True, f"AABB {i_a} should intersect with itself"
                 else:
-                    assert intersect[i_b, i_a, j_a] == intersect[i_b, j_a, i_a], (
-                        f"AABBs {i_a} and {j_a} should have the same intersection result"
-                    )
+                    assert (
+                        intersect[i_b, i_a, j_a] == intersect[i_b, j_a, i_a]
+                    ), f"AABBs {i_a} and {j_a} should have the same intersection result"

@@ -2,6 +2,7 @@ import os
 import sys
 import subprocess
 from pathlib import Path
+
 import pytest
 
 
@@ -13,19 +14,17 @@ ALLOW_PATTERNS = {
     "coupling/**/*.py",
     "drone/interactive_drone.py",
     "drone/fly_route.py",
-    "IPC_Solver/**/*.py",
-    "kinematic/**/*.py",
+    # "IPC_Solver/**/*.py",  # TODO: wait for IPC's wheel to be released
     "rigid/**/*.py",
     "render_async/**/*.py",
     "sap_coupling/**/*.py",
     "sensors/**/*.py",
     "tutorials/**/*.py",
-    "usd/**/*.py",
-    "viewer_plugins/**/*.py",
 }
 IGNORE_SCRIPT_NAMES = {
     "ddp_multi_gpu.py",
     "multi_gpu.py",
+    "visualization.py",  # FIXME: Flaky because of possibly undefined shadow map when running in thread
     "single_franka_batch_render.py",  # FIXME: segfault on exit
     "fem_cube_linked_with_arm.py",  # FIXME: segfault on exit (corrupted double-linked list)
 }
@@ -34,14 +33,7 @@ if sys.platform != "linux":
         "cut_dragon.py",
     }
 
-# Map example scripts or directories to their required optional dependencies.
-# Directory keys apply recursively to all scripts within that directory.
-EXAMPLE_DEPENDENCIES = {
-    "import_stage.py": ["pxr"],  # Requires usd-core package (provides pxr module)
-    "IPC_Solver": ["uipc"],  # Requires pyuipc package (provides uipc module)
-}
-
-TIMEOUT = 600
+TIMEOUT = 500.0
 
 
 pytestmark = [
@@ -66,16 +58,6 @@ def _discover_examples():
 @pytest.mark.parametrize("backend", [None])  # Disable genesis initialization at worker level
 @pytest.mark.parametrize("file", _discover_examples(), ids=lambda p: p.relative_to(EXAMPLES_DIR).as_posix())
 def test_example(file: Path):
-    # Check for required optional dependencies (script-level and inherited from parent dirs)
-    rel = file.relative_to(EXAMPLES_DIR)
-    module_deps = list(EXAMPLE_DEPENDENCIES.get(rel.name, []))
-    for parent in rel.parents:
-        if parent != Path("."):
-            module_deps.extend(EXAMPLE_DEPENDENCIES.get(parent.as_posix(), []))
-
-    for module_name in module_deps:
-        pytest.importorskip(module_name, reason=f"Python module '{module_name}' not installed.")
-
     # Disable keyboard control and monitoring when running the unit tests
     env = os.environ.copy()
     env["PYNPUT_BACKEND"] = "dummy"

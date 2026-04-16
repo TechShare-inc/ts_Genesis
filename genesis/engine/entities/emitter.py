@@ -1,3 +1,4 @@
+import gstaichi as ti
 import numpy as np
 import torch
 
@@ -7,6 +8,7 @@ import genesis.utils.particle as pu
 from genesis.repr_base import RBC
 
 
+@ti.data_oriented
 class Emitter(RBC):
     """
     A particle emitter for fluid or material simulation.
@@ -29,7 +31,7 @@ class Emitter(RBC):
         self._acc_droplet_len = 0.0  # accumulated droplet length to be emitted
 
         gs.logger.info(
-            f"Creating ~<{self.__repr_name__()}>~. id: ~~~<{self._uid}>~~~, max_particles: ~<{max_particles}>~."
+            f"Creating ~<{self._repr_type()}>~. id: ~~~<{self._uid}>~~~, max_particles: ~<{max_particles}>~."
         )
 
     def set_entity(self, entity):

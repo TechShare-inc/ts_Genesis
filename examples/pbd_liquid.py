@@ -1,6 +1,7 @@
 import argparse
 import os
 
+import numpy as np
 
 import genesis as gs
 
@@ -42,7 +43,7 @@ def main():
         ),
         morph=gs.morphs.Box(lower=(0.2, 0.1, 0.1), upper=(0.4, 0.3, 0.5)),
     )
-    scene.build(n_envs=0)
+    scene.build(n_envs=2)
 
     horizon = 4000 if "PYTEST_VERSION" not in os.environ else 5
     for i in range(horizon):

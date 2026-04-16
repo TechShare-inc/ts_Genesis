@@ -3,7 +3,7 @@ import numpy as np
 import genesis as gs
 
 ########################## init ##########################
-gs.init(backend=gs.gpu, performance_mode=True)
+gs.init(backend=gs.gpu)
 
 ########################## create a scene ##########################
 

@@ -1,6 +1,5 @@
 import os
 import pickle as pkl
-from typing import Any
 
 import fast_simplification
 import numpy as np
@@ -18,9 +17,8 @@ from genesis.utils.misc import redirect_libc_stderr
 class Mesh(RBC):
     """
     Genesis's own triangle mesh object.
-
-    This is a wrapper of `trimesh.Trimesh` with some additional features and attributes. The internal trimesh object
-    can be accessed via `self.trimesh`.
+    This is a wrapper of `trimesh.Trimesh` with some additional features and attributes. The internal trimesh object can be accessed via `self.trimesh`.
+    We perform both convexification and decimation to preprocess the mesh for simulation if specified.
 
     Parameters
     ----------
@@ -47,44 +45,24 @@ class Mesh(RBC):
         mesh,
         surface: Surface | None = None,
         uvs: "np.typing.NDArray | None" = None,
-        scale: "np.typing.NDArray | float | None" = None,
         convexify=False,
         decimate=False,
         decimate_face_num=500,
         decimate_aggressiveness=0,
         metadata=None,
-        is_mesh_zup: bool = True,
     ):
         self._uid = gs.UID()
-        self._mesh = mesh  # .copy() FIXME: For some reason forcing copy is causing some tests to fails...
+        self._mesh = mesh
         self._surface = surface
-        if uvs is not None:
-            uvs = uvs.astype(gs.np_float, copy=False)
         self._uvs = uvs
-        self._metadata: dict[str, Any] = metadata or {}
+        self._metadata = metadata or {}
         self._color = np.array([1.0, 1.0, 1.0, 1.0], dtype=gs.np_float)
 
-        # By default, all meshes are considered zup, unless the "FileMorph.file_meshes_are_zup" option was set to False
-        self._metadata.setdefault("imported_as_zup", True)
-
-        # By default, all meshes are considered having their original visual
-        self._metadata.setdefault("is_visual_overwritten", False)
-
-        if not is_mesh_zup:
-            if self._metadata["imported_as_zup"]:
-                self._mesh.apply_transform(mu.Y_UP_TRANSFORM.T)
-            self._metadata["imported_as_zup"] = False
-
-        if scale is not None:
-            scale = np.atleast_1d(np.asarray(scale))
-            assert scale.ndim == 1 and scale.size in (1, 3)
-            self._mesh.apply_scale(scale)
-
-        if self._surface.requires_uv:  # check uvs here
+        if self._surface.requires_uv():  # check uvs here
             if self._uvs is None:
-                if "mesh_path" in self._metadata:
+                if "mesh_path" in metadata:
                     gs.logger.warning(
-                        f"Texture given but asset missing uv info (or failed to load): {self._metadata['mesh_path']}"
+                        f"Texture given but asset missing uv info (or failed to load): {metadata['mesh_path']}"
                     )
                 else:
                     gs.logger.warning("Texture given but asset missing uv info (or failed to load).")
@@ -95,7 +73,7 @@ class Mesh(RBC):
             self.convexify()
 
         if decimate:
-            self.decimate(decimate_face_num, decimate_aggressiveness)
+            self.decimate(decimate_face_num, decimate_aggressiveness, convexify)
 
     def convexify(self):
         """
@@ -106,7 +84,7 @@ class Mesh(RBC):
             self._metadata["convexified"] = True
         self.clear_visuals()
 
-    def decimate(self, decimate_face_num, decimate_aggressiveness):
+    def decimate(self, decimate_face_num, decimate_aggressiveness, convexify):
         """
         Decimate the mesh.
         """
@@ -123,6 +101,10 @@ class Mesh(RBC):
             )
             self._metadata["decimated"] = True
 
+            # need to run convexify again after decimation, because sometimes decimating a convex-mesh can make it non-convex...
+            if convexify:
+                self.convexify()
+
         self.clear_visuals()
 
     def remesh(self, edge_len_abs=None, edge_len_ratio=0.01, fix=True):
@@ -138,7 +120,7 @@ class Mesh(RBC):
                 with open(rm_file_path, "rb") as file:
                     verts, faces = pkl.load(file)
                 is_cached_loaded = True
-            except (EOFError, ModuleNotFoundError, pkl.UnpicklingError, TypeError, MemoryError):
+            except (EOFError, ModuleNotFoundError, pkl.UnpicklingError):
                 gs.logger.info("Ignoring corrupted cache.")
 
         if not is_cached_loaded:
@@ -162,7 +144,10 @@ class Mesh(RBC):
             with open(rm_file_path, "wb") as file:
                 pkl.dump((verts, faces), file)
 
-        self._mesh = trimesh.Trimesh(vertices=verts, faces=faces)
+        self._mesh = trimesh.Trimesh(
+            vertices=verts,
+            faces=faces,
+        )
         self.clear_visuals()
 
     def tetrahedralize(self, tet_cfg):
@@ -210,7 +195,7 @@ class Mesh(RBC):
         """
         return Mesh(
             mesh=self._mesh.copy(**(dict(include_cache=True) if isinstance(self._mesh, trimesh.Trimesh) else {})),
-            surface=self._surface.model_copy(),
+            surface=self._surface.copy(),
             uvs=self._uvs.copy() if self._uvs is not None else None,
             metadata=self._metadata.copy(),
         )
@@ -226,7 +211,6 @@ class Mesh(RBC):
         decimate_aggressiveness=2,
         metadata=None,
         surface=None,
-        is_mesh_zup=True,
     ):
         """
         Create a genesis.Mesh from a trimesh.Trimesh object.
@@ -235,19 +219,16 @@ class Mesh(RBC):
             surface = gs.surfaces.Default()
             surface.update_texture()
         else:
-            surface = surface.model_copy()
-
+            surface = surface.copy()
         mesh = mesh.copy(**(dict(include_cache=True) if isinstance(mesh, trimesh.Trimesh) else {}))
 
-        # Always parse uvs if available because roughness and normal map also need uvs.
-        # Note that some visual may not have uv, e.g. ColorVisuals.
-        uvs = None
-        if isinstance(mesh.visual, trimesh.visual.texture.TextureVisuals) and mesh.visual.uv is not None:
-            # Note that 'trimesh' uses uvs starting from top left corner.
+        try:  # always parse uvs because roughness and normal map also need uvs
             uvs = mesh.visual.uv.copy()
-            uvs[:, 1] = 1.0 - uvs[:, 1]
+            uvs[:, 1] = 1.0 - uvs[:, 1]  # trimesh uses uvs starting from top left corner
+        except AttributeError:
+            # Visual may not have uv, e.g. ColorVisuals
+            uvs = None
 
-        metadata = metadata or {}
         must_update_surface = True
         roughness_factor = None
         color_image = None
@@ -277,7 +258,7 @@ class Mesh(RBC):
                         color_factor = tuple(np.array(material.diffuse, dtype=np.float32) / 255.0)
 
                     if material.glossiness is not None:
-                        roughness_factor = (mu.glossiness_to_roughness(material.glossiness),)
+                        roughness_factor = ((2 / (material.glossiness + 2)) ** (1.0 / 4.0),)
 
                     opacity = float(material.kwargs.get("d", [1.0])[0])
                     if opacity < 1.0:
@@ -290,20 +271,19 @@ class Mesh(RBC):
             else:
                 # TODO: support vertex/face colors in luisa
                 color_factor = tuple(np.array(visual.main_color, dtype=np.float32) / 255.0)
-        elif isinstance(surface.texture, gs.textures.ColorTexture):
-            color_factor = surface.texture.color
         elif (isinstance(visual, trimesh.visual.color.ColorVisuals) and visual.defined) or (
             isinstance(visual, trimesh.visual.color.VertexColor) and visual.vertex_colors.size > 0
         ):
-            # Color is already vertex-based. It is not only necessary to create a new visual.
-            must_update_surface = False
+            # Color is already vertex-based. No need to create a new texture to keep the original one, unless a color
+            # overwrite has been specified as surface-level.
+            must_update_surface = surface.color is not None
+        elif surface.color is not None:
+            color_factor = surface.color
         else:
             # use white color as default
             color_factor = (1.0, 1.0, 1.0, 1.0)
 
         if must_update_surface:
-            metadata["is_visual_overwritten"] = isinstance(surface.texture, gs.textures.ColorTexture)
-
             color_texture = mu.create_texture(color_image, color_factor, "srgb")
             opacity_texture = None
             if color_texture is not None:
@@ -317,67 +297,67 @@ class Mesh(RBC):
             )
             mesh.visual = mu.surface_uvs_to_trimesh_visual(surface, uvs, len(mesh.vertices))
 
+        if scale is not None:
+            mesh.vertices *= scale
+
         return cls(
             mesh=mesh,
             surface=surface,
             uvs=uvs,
-            scale=scale,
             convexify=convexify,
             decimate=decimate,
             decimate_face_num=decimate_face_num,
             decimate_aggressiveness=decimate_aggressiveness,
             metadata=metadata,
-            is_mesh_zup=is_mesh_zup,
         )
 
     @classmethod
-    def from_attrs(
-        cls, verts, faces, normals=None, surface=None, uvs=None, scale=None, metadata=None, is_mesh_zup=True
-    ):
+    def from_attrs(cls, verts, faces, normals=None, surface=None, uvs=None, scale=None):
         """
-        Create a genesis.Mesh from mesh attributes including vertices, faces, and normals.
+        Create a genesis.Mesh from mesh attribtues including vertices, faces, and normals.
         """
         if surface is None:
             surface = gs.surfaces.Default()
 
-        metadata = metadata or {}
-        metadata["is_visual_overwritten"] = metadata.get("is_visual_overwritten") or (surface.texture is not None)
-        visual = mu.surface_uvs_to_trimesh_visual(surface, uvs, len(verts))
-
-        tmesh = trimesh.Trimesh(
-            vertices=verts,
-            faces=faces,
-            vertex_normals=normals,
-            visual=visual,
-            process=False,
-        )
-
         return cls(
-            mesh=tmesh,
+            mesh=trimesh.Trimesh(
+                vertices=verts * scale if scale is not None else verts,
+                faces=faces,
+                vertex_normals=normals,
+                visual=mu.surface_uvs_to_trimesh_visual(surface, uvs, len(verts)),
+                process=False,
+            ),
             surface=surface,
             uvs=uvs,
-            scale=scale,
-            metadata=metadata,
-            is_mesh_zup=is_mesh_zup,
         )
 
     @classmethod
-    def from_morph_surface(cls, morph, surface=None) -> "list[gs.Mesh] | gs.Mesh":
+    def from_morph_surface(cls, morph, surface=None):
         """
         Create a genesis.Mesh from morph and surface options.
-
         If the morph is a Mesh morph (morphs.Mesh), it could contain multiple sub-meshes, so we return a list.
         """
         if isinstance(morph, gs.options.morphs.Mesh):
             if morph.is_format(gs.options.morphs.MESH_FORMATS):
-                if morph.is_format(gs.options.morphs.GLTF_FORMATS):
-                    meshes = gltf_utils.parse_mesh_glb(
-                        morph.file, morph.group_by_material, morph.scale, morph.file_meshes_are_zup, surface
-                    )
+                meshes = mu.parse_mesh_trimesh(morph.file, morph.group_by_material, morph.scale, surface)
+            elif morph.is_format(gs.options.morphs.GLTF_FORMATS):
+                if morph.parse_glb_with_trimesh:
+                    meshes = mu.parse_mesh_trimesh(morph.file, morph.group_by_material, morph.scale, surface)
                 else:
-                    meshes = mu.parse_mesh_trimesh(
-                        morph.file, morph.group_by_material, morph.scale, morph.file_meshes_are_zup, surface
+                    meshes = gltf_utils.parse_mesh_glb(morph.file, morph.group_by_material, morph.scale, surface)
+                if morph.parse_glb_with_zup:
+                    for mesh in meshes:
+                        mesh.convert_to_zup()
+                else:
+                    gs.logger.warning(
+                        "GLTF is using y-up while Genesis uses z-up. Please set parse_glb_with_zup=True"
+                        " in morph options if you find the mesh is 90-degree rotated. We will set parse_glb_with_zup=True"
+                        " and rotate glb mesh by default later and gradually enforce this option."
                     )
+            elif morph.is_format(gs.options.morphs.USD_FORMATS):
+                import genesis.utils.usda as usda_utils
+
+                meshes = usda_utils.parse_mesh_usd(morph.file, morph.group_by_material, morph.scale, surface)
             elif isinstance(morph, gs.options.morphs.MeshSet):
                 assert all(isinstance(mesh, trimesh.Trimesh) for mesh in morph.files)
                 meshes = [mu.trimesh_to_mesh(mesh, morph.scale, surface) for mesh in morph.files]
@@ -386,16 +366,21 @@ class Mesh(RBC):
 
             return meshes
 
-        if isinstance(morph, gs.options.morphs.Box):
-            tmesh = mu.create_box(extents=morph.size)
-        elif isinstance(morph, gs.options.morphs.Cylinder):
-            tmesh = mu.create_cylinder(radius=morph.radius, height=morph.height)
-        elif isinstance(morph, gs.options.morphs.Sphere):
-            tmesh = mu.create_sphere(radius=morph.radius)
         else:
-            gs.raise_exception(f"Morph {morph} not supported by this method.")
+            if isinstance(morph, gs.options.morphs.Box):
+                tmesh = mu.create_box(extents=morph.size)
 
-        return cls.from_trimesh(tmesh, surface=surface)
+            elif isinstance(morph, gs.options.morphs.Cylinder):
+                tmesh = mu.create_cylinder(radius=morph.radius, height=morph.height)
+
+            elif isinstance(morph, gs.options.morphs.Sphere):
+                tmesh = mu.create_sphere(radius=morph.radius)
+
+            else:
+                gs.raise_exception()
+
+            metadata = {}
+            return cls.from_trimesh(tmesh, surface=surface, metadata=metadata)
 
     def set_color(self, color):
         """
@@ -412,13 +397,24 @@ class Mesh(RBC):
         Update the trimesh obj's visual attributes using its surface and uvs.
         """
         self._mesh.visual = mu.surface_uvs_to_trimesh_visual(self.surface, self.uvs, len(self.verts))
-        self._metadata["is_visual_overwritten"] = True
+
+    def convert_to_zup(self):
+        """
+        Convert the mesh to z-up.
+        """
+        self._mesh.apply_transform(mu.Y_UP_TRANSFORM.T)
 
     def apply_transform(self, T):
         """
         Apply a 4x4 transformation matrix (translation on the right column) to the mesh.
         """
         self._mesh.apply_transform(T)
+
+    def show(self):
+        """
+        Visualize the mesh using trimesh's built-in viewer.
+        """
+        return self._mesh.show()
 
     @property
     def uid(self):
@@ -439,7 +435,7 @@ class Mesh(RBC):
         """
         Whether the mesh is convex.
         """
-        return self.metadata.get("convexified", self._mesh.is_convex)
+        return self._mesh.is_convex
 
     @property
     def metadata(self):

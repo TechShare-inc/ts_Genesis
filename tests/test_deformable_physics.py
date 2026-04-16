@@ -107,6 +107,7 @@ def test_muscle(n_envs, muscle_material, show_viewer):
 @pytest.mark.slow  # ~150s
 @pytest.mark.debug(False)  # Disable debug for speedup
 @pytest.mark.required
+@pytest.mark.skipif(platform.machine() == "aarch64", reason="Module 'tetgen' is crashing on Linux ARM.")
 @pytest.mark.parametrize("backend", [gs.gpu])
 def test_deformable_parallel(show_viewer):
     scene = gs.Scene(
@@ -220,66 +221,8 @@ def test_deformable_parallel(show_viewer):
     assert_allclose(water.get_particles_vel(), 0.0, atol=5e-2)
 
 
-@pytest.mark.required
-def test_mpm_particle_constraints(show_viewer):
-    """Test MPM particle constraints: bbox selection, attachment, and following."""
-    scene = gs.Scene(
-        sim_options=gs.options.SimOptions(
-            dt=2e-3,
-            substeps=20,
-        ),
-        mpm_options=gs.options.MPMOptions(
-            lower_bound=(-1.0, -1.0, 0.0),
-            upper_bound=(1.0, 1.0, 1.0),
-            grid_density=64,
-        ),
-        show_viewer=show_viewer,
-        show_FPS=False,
-    )
-    scene.add_entity(gs.morphs.Plane())
-    rigid_box = scene.add_entity(
-        gs.morphs.Box(
-            pos=(0, 0, 0.55),
-            size=(0.12, 0.12, 0.05),
-            fixed=True,
-        ),
-    )
-    mpm_cube = scene.add_entity(
-        material=gs.materials.MPM.Elastic(
-            E=5e4,
-            nu=0.3,
-            rho=1000,
-        ),
-        morph=gs.morphs.Box(
-            pos=(0, 0, 0.35),
-            size=(0.15, 0.15, 0.15),
-        ),
-    )
-    scene.build(n_envs=2)
-
-    # Test get_particles_in_bbox - returns (n_envs, n_particles) mask
-    mask = mpm_cube.get_particles_in_bbox((-0.08, -0.08, 0.41), (0.08, 0.08, 0.44))
-    assert mask.shape == (2, mpm_cube.n_particles), "mask should be (n_envs, n_particles)"
-    assert mask.any(), "bbox should select some particles"
-    assert not mask.all(), "bbox should not select all particles"
-
-    # Attach and test following
-    link_idx = rigid_box.links[0].idx
-    mpm_cube.set_particle_constraints(mask, link_idx, stiffness=1e5)
-    initial_rigid_pos = rigid_box.get_pos()
-    initial_mpm_x = mpm_cube.get_particles_pos()[:, mask[0], 0].mean()
-
-    pos_diff = torch.tensor([0.2, 0, 0], device=gs.device)
-    rigid_box.set_pos(initial_rigid_pos + pos_diff, zero_velocity=False)
-    for _ in range(30):
-        scene.step()
-
-    mpm_diff = mpm_cube.get_particles_pos()[:, mask[0], 0].mean() - initial_mpm_x
-    assert mpm_diff > pos_diff[0] * 0.3, f"MPM should follow rigid link. Got {mpm_diff:.3f}"
-
-
 def test_sf_solver(show_viewer):
-    import quadrants as qd
+    import gstaichi as ti
 
     res = 384
     orbit_tau = 0.2
@@ -303,8 +246,8 @@ def test_sf_solver(show_viewer):
         show_viewer=show_viewer,
     )
 
-    @qd.data_oriented
-    class Jet:
+    @ti.data_oriented
+    class Jet(object):
         def __init__(
             self,
             world_center,
@@ -316,7 +259,7 @@ def test_sf_solver(show_viewer):
             sub_orbit_radius,
             sub_orbit_tau,
         ):
-            self.world_center = qd.Vector(world_center)
+            self.world_center = ti.Vector(world_center)
             self.orbit_radius = orbit_radius
             self.orbit_radius_vel = orbit_radius_vel
             self.orbit_init_radian = math.radians(orbit_init_degree)
@@ -329,24 +272,24 @@ def test_sf_solver(show_viewer):
             self.sub_orbit_radius = sub_orbit_radius
             self.sub_orbit_tau = sub_orbit_tau
 
-        @qd.func
+        @ti.func
         def get_pos(self, t: float):
-            rel_pos = qd.Vector([self.orbit_radius + t * self.orbit_radius_vel, 0.0, 0.0])
-            rot_mat = qd.math.rot_by_axis(qd.Vector([0.0, 1.0, 0.0]), self.orbit_init_radian + t * self.orbit_tau)[
+            rel_pos = ti.Vector([self.orbit_radius + t * self.orbit_radius_vel, 0.0, 0.0])
+            rot_mat = ti.math.rot_by_axis(ti.Vector([0.0, 1.0, 0.0]), self.orbit_init_radian + t * self.orbit_tau)[
                 :3, :3
             ]
             rel_pos = rot_mat @ rel_pos
             return rel_pos
 
-        @qd.func
+        @ti.func
         def get_factor(self, i: int, j: int, k: int, dx: float, t: float):
             rel_pos = self.get_pos(t)
             tan_dir = self.get_tan_dir(t)
-            ijk = qd.Vector([i, j, k], dt=gs.qd_float) * dx
+            ijk = ti.Vector([i, j, k], dt=gs.ti_float) * dx
             dist = 2 * self.jet_radius
-            for q in qd.static(range(self.num_sub_jets)):
-                jet_pos = qd.Vector([0.0, self.sub_orbit_radius, 0.0])
-                rot_mat = qd.math.rot_by_axis(tan_dir, self.sub_orbit_radian_delta * q + self.sub_orbit_tau * t)[:3, :3]
+            for q in ti.static(range(self.num_sub_jets)):
+                jet_pos = ti.Vector([0.0, self.sub_orbit_radius, 0.0])
+                rot_mat = ti.math.rot_by_axis(tan_dir, self.sub_orbit_radian_delta * q + self.sub_orbit_tau * t)[:3, :3]
                 jet_pos = (rot_mat @ jet_pos) + self.world_center + rel_pos
                 dist_q = (ijk - jet_pos).norm(gs.EPS)
                 if dist_q < dist:
@@ -356,15 +299,15 @@ def test_sf_solver(show_viewer):
                 factor = 1.0
             return factor
 
-        @qd.func
+        @ti.func
         def get_inward_dir(self, t: float):
             neg_pos = -self.get_pos(t)
             return neg_pos.normalized(gs.EPS)
 
-        @qd.func
+        @ti.func
         def get_tan_dir(self, t: float):
             inward_dir = self.get_inward_dir(t)
-            tan_rot_mat = qd.math.rot_by_axis(qd.Vector([0.0, 1.0, 0.0]), 0.0)[:3, :3]
+            tan_rot_mat = ti.math.rot_by_axis(ti.Vector([0.0, 1.0, 0.0]), 0.0)[:3, :3]
             return tan_rot_mat @ inward_dir
 
     jet = [

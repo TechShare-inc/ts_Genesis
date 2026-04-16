@@ -1,7 +1,8 @@
-import quadrants as qd
+import gstaichi as ti
 import torch
 
 import genesis as gs
+import genesis.utils.geom as gu
 from genesis.utils import array_class
 from genesis.utils.misc import DeprecationError
 from genesis.repr_base import RBC
@@ -68,22 +69,6 @@ class RigidJoint(RBC):
         self._dofs_kv = dofs_kv
         self._dofs_force_range = dofs_force_range
 
-    def __getattr__(self, name):
-        # Must be implemented to throw deprecation warnings when accessing old properties, ignoring introspection
-        for name_old, name_new in (
-            ("dof_idx", "dofs_idx"),
-            ("dof_idx_local", "dofs_idx_local"),
-            ("q_idx", "qs_idx"),
-            ("q_idx_local", "qs_idx_local"),
-        ):
-            if name == name_old:
-                gs.logger.warning(
-                    f"This property is deprecated and will be removed in future release. Please use '{name_new}' instead."
-                )
-                getter = getattr(self, f"_{name_old}")
-                return getter()
-        raise AttributeError
-
     # ------------------------------------------------------------------------------------
     # -------------------------------- real-time state -----------------------------------
     # ------------------------------------------------------------------------------------
@@ -139,7 +124,7 @@ class RigidJoint(RBC):
         """
         Set the solver parameters of this joint.
         """
-        if self._solver.is_built:
+        if self.is_built:
             self._solver.set_sol_params(sol_params, joints_idx=self._idx, envs_idx=None)
         else:
             self._sol_params = sol_params
@@ -147,9 +132,9 @@ class RigidJoint(RBC):
     @property
     def sol_params(self):
         """
-        Returns the solver parameters of the joint.
+        Retruns the solver parameters of the joint.
         """
-        if self._solver.is_built:
+        if self.is_built:
             return self._solver.get_sol_params(joints_idx=self._idx, envs_idx=None)[..., 0, :]
         return self._sol_params
 
@@ -276,13 +261,17 @@ class RigidJoint(RBC):
         """
         return self._n_dofs + self.dof_start
 
-    def _dof_idx(self):
+    @property
+    def dof_idx(self):
         """
         Returns all the Degrees' of Freedom (DoF) indices of the joint in the rigid solver.
 
         This property either returns a list, an integer, or None depending on whether the joint has multiple DoFs, a
         single one, or none, respectively.
         """
+        gs.logger.warning(
+            "This property is deprecated and will be removed in future release. Please use 'dofs_idx' instead."
+        )
         if self.n_dofs == 1:
             return self.dof_start
         if self.n_dofs == 0:
@@ -296,13 +285,17 @@ class RigidJoint(RBC):
         """
         return list(range(self.dof_start, self.dof_end))
 
-    def _dof_idx_local(self):
+    @property
+    def dof_idx_local(self):
         """
         Returns the local dof index of the joint in the entity.
 
         This property either returns a list, an integer, or None depending on whether the joint has multiple DoFs, a
         single one, or none, respectively.
         """
+        gs.logger.warning(
+            "This property is deprecated and will be removed in future release. Please use 'dofs_idx_local' instead."
+        )
         if self.n_dofs == 1:
             return self.dof_start - self._entity.dof_start
         if self.n_dofs == 0:
@@ -316,13 +309,17 @@ class RigidJoint(RBC):
         """
         return list(range(self.dof_start - self._entity.dof_start, self.dof_end - self._entity.dof_start))
 
-    def _q_idx(self):
+    @property
+    def q_idx(self):
         """
         Returns all the position indices of the joint in the rigid solver.
 
         This property either returns a list, an integer, or None depending on whether the joint has multiple position
         indices, a single one, or none, respectively.
         """
+        gs.logger.warning(
+            "This property is deprecated and will be removed in future release. Please use 'qs_idx' instead."
+        )
         if self.n_qs == 1:
             return self.q_start
         elif self.n_qs == 0:
@@ -337,10 +334,14 @@ class RigidJoint(RBC):
         """
         return list(range(self.q_start, self.q_end))
 
-    def _q_idx_local(self):
+    @property
+    def q_idx_local(self):
         """
         Returns all the local `q` indices of the joint in the entity.
         """
+        gs.logger.warning(
+            "This property is deprecated and will be removed in future release. Please use 'qs_idx_local' instead."
+        )
         if self.n_qs == 1:
             return self.q_start - self._entity.q_start
         elif self.n_qs == 0:
@@ -438,22 +439,22 @@ class RigidJoint(RBC):
     # ------------------------------------------------------------------------------------
 
     def _repr_brief(self):
-        return f"{(self.__repr_name__())}: {self._uid}, name: '{self._name}', idx: {self._idx}, type: {self._type}"
+        return f"{(self._repr_type())}: {self._uid}, name: '{self._name}', idx: {self._idx}, type: {self._type}"
 
 
-@qd.kernel
-def _kernel_get_anchor_pos(joint_idx: qd.i32, tensor: qd.types.ndarray(), joints_state: array_class.JointsState):
+@ti.kernel
+def _kernel_get_anchor_pos(joint_idx: ti.i32, tensor: ti.types.ndarray(), joints_state: array_class.JointsState):
     _B = joints_state.xanchor.shape[1]
     for i_b in range(_B):
         xpos = joints_state.xanchor[joint_idx, i_b]
-        for i in qd.static(range(3)):
+        for i in ti.static(range(3)):
             tensor[i_b, i] = xpos[i]
 
 
-@qd.kernel
-def _kernel_get_anchor_axis(joint_idx: qd.i32, tensor: qd.types.ndarray(), joints_state: array_class.JointsState):
+@ti.kernel
+def _kernel_get_anchor_axis(joint_idx: ti.i32, tensor: ti.types.ndarray(), joints_state: array_class.JointsState):
     _B = joints_state.xaxis.shape[1]
     for i_b in range(_B):
         xaxis = joints_state.xaxis[joint_idx, i_b]
-        for i in qd.static(range(3)):
+        for i in ti.static(range(3)):
             tensor[i_b, i] = xaxis[i]

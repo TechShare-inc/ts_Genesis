@@ -6,32 +6,34 @@ import logging
 import math
 import numbers
 import os
+import platform
 import random
 import sys
-from collections.abc import Callable
+import types
+import weakref
+from collections import OrderedDict
 from dataclasses import field
 from itertools import combinations
-from typing import Any, NoReturn, Optional, Sequence
+from typing import Any, Callable, NoReturn, Optional, Type, Sequence
 
 import cpuinfo
-import quadrants as qd
+import gstaichi as ti
 import numpy as np
 import psutil
 import pyglet
 import torch
 
-from quadrants.lang.util import to_pytorch_type, to_numpy_type
-from quadrants._kernels import tensor_to_ext_arr, matrix_to_ext_arr, ndarray_to_ext_arr, ndarray_matrix_to_ext_arr
+from gstaichi.lang.util import is_ti_template, to_pytorch_type, to_numpy_type
+from gstaichi._kernels import tensor_to_ext_arr, matrix_to_ext_arr, ndarray_to_ext_arr, ndarray_matrix_to_ext_arr
+from gstaichi.lang import impl
+from gstaichi.lang.exception import handle_exception_from_cpp
+from gstaichi.types import primitive_types
 
 import genesis as gs
+from genesis.constants import backend as gs_backend
 
 
 LOGGER = logging.getLogger(__name__)
-
-
-# FIXME: qd.Field does not support zero-copy on Metal for 'torch<=2.9.1'.
-# See: https://github.com/pytorch/pytorch/pull/168193
-TORCH_MPS_SUPPORT_DLPACK_FIELD = tuple(map(int, torch.__version__.replace("+", ".").split(".")[:3])) > (2, 9, 1)
 
 
 class DeprecationError(Exception):
@@ -62,7 +64,7 @@ class redirect_libc_stderr:
     def __enter__(self):
         try:
             self.stderr_fileno = sys.stderr.fileno()
-        except (io.UnsupportedOperation, AttributeError):
+        except io.UnsupportedOperation:
             # Do nothing is not a real OS-level file descriptor but rather some IO buffer
             return self
 
@@ -152,8 +154,8 @@ def assert_built(method):
 
 
 def set_random_seed(seed):
-    # Note: we don't set seed for quadrants, since Quadrants doesn't support stochastic operations in gradient computation.
-    # Therefore, we only allow deterministic Quadrants operations.
+    # Note: we don't set seed for taichi, since taichi doesn't support stochastic operations in gradient computation.
+    # Therefore, we only allow deterministic taichi operations.
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -161,44 +163,69 @@ def set_random_seed(seed):
     torch.cuda.manual_seed_all(seed)
 
 
-def get_device(backend: gs.constants.backend, device_idx: Optional[int] = None):
-    if backend == gs.gpu:
-        if torch.cuda.is_available():
-            if torch.version.hip:
-                backend = gs.amdgpu
-            else:  # torch.version.cuda:
-                backend = gs.cuda
-        elif sys.platform == "darwin":
-            backend = gs.metal
-        else:
-            gs.raise_exception("No Torch GPU device available.")
+def get_platform():
+    name = platform.platform()
+    # in python 3.8, platform.platform() uses mac_ver() on macOS
+    # it will return 'macOS-XXXX' instead of 'Darwin-XXXX'
+    if name.lower().startswith("darwin") or name.lower().startswith("macos"):
+        return "macOS"
 
-    if backend in (gs.cuda, gs.amdgpu):
-        if (
-            not torch.cuda.is_available()
-            or (backend == gs.cuda and not torch.version.cuda)
-            or (backend == gs.amdgpu and not torch.version.hip)
-        ):
-            gs.raise_exception(f"Torch device 'cuda' not available for backend '{backend}'.")
+    if name.lower().startswith("windows"):
+        return "Windows"
+
+    if name.lower().startswith("linux"):
+        return "Linux"
+
+    if "bsd" in name.lower():
+        return "Unix"
+
+    assert False, f"Unknown platform name {name}"
+
+
+def get_device(backend: gs_backend, device_idx: Optional[int] = None):
+    if backend == gs_backend.cpu:
+        cpu_info = cpuinfo.get_cpu_info()
+        device_name = next(filter(None, map(cpu_info.get, ("brand_raw", "hardware_raw", "vendor_id_raw"))))
+        total_mem = psutil.virtual_memory().total / 1024**3
+        device = torch.device("cpu", device_idx)
+    elif backend == gs_backend.cuda:
+        if not torch.cuda.is_available():
+            gs.raise_exception("torch cuda not available")
         if device_idx is None:
             device_idx = torch.cuda.current_device()
         device = torch.device("cuda", device_idx)
         device_property = torch.cuda.get_device_properties(device)
         device_name = device_property.name
         total_mem = device_property.total_memory / 1024**3
-    elif backend == gs.metal:
+    elif backend == gs_backend.metal:
         if not torch.backends.mps.is_available():
-            gs.raise_exception("Torch device 'mps' not available.")
+            gs.raise_exception("Torch metal backend not available.")
         # on mac, cpu and gpu are in the same physical hardware and sharing memory
-        _, device_name, total_mem, _ = get_device(gs.cpu)
-        assert not device_idx, "Specifying device index other than 0 is not support for Torch Metal device."
-        device = torch.device("mps")
-    else:
-        cpu_info = cpuinfo.get_cpu_info()
-        device_name = next(filter(None, map(cpu_info.get, ("brand_raw", "hardware_raw", "vendor_id_raw"))))
-        total_mem = psutil.virtual_memory().total / 1024**3
-        assert not device_idx, "Specifying device index other than 0 is not support for Torch CPU device."
-        device = torch.device("cpu")
+        _, device_name, total_mem, _ = get_device(gs_backend.cpu)
+        device = torch.device("mps", device_idx)
+    elif backend == gs_backend.vulkan:
+        if torch.cuda.is_available():
+            device, device_name, total_mem, _ = get_device(gs_backend.cuda)
+        elif torch.xpu.is_available():  # pytorch 2.5+ supports Intel XPU device
+            if device_idx is None:
+                device_idx = torch.xpu.current_device()
+            device = torch.device("xpu", device_idx)
+            device_property = torch.xpu.get_device_properties(device_idx)
+            device_name = device_property.name
+            total_mem = device_property.total_memory / 1024**3
+        else:  # pytorch tensors on cpu
+            # logger may not be configured at this point
+            logger = getattr(gs, "logger", None) or LOGGER
+            logger.warning("Torch GPU backend not available. Falling back to CPU device.")
+            device, device_name, total_mem, _ = get_device(gs_backend.cpu)
+    else:  # backend == gs_backend.gpu:
+        if torch.cuda.is_available():
+            return get_device(gs_backend.cuda)
+        elif get_platform() == "macOS":
+            return get_device(gs_backend.metal)
+        else:
+            return get_device(gs_backend.vulkan)
+
     return device, device_name, total_mem, backend
 
 
@@ -221,7 +248,7 @@ def get_cache_dir():
     if cache_dir is not None:
         return cache_dir
     root_cache_dir = None
-    if sys.platform == "linux":
+    if get_platform() == "Linux":
         root_cache_dir = os.environ.get("XDG_CACHE_HOME")
     if root_cache_dir is None:
         root_cache_dir = os.path.join(os.path.expanduser("~"), ".cache")
@@ -264,22 +291,6 @@ def get_usd_cache_dir():
     return os.path.join(get_cache_dir(), "usd")
 
 
-def geometric_mean(a, b):
-    """Geometric mean of two non-negative values: sqrt(a * b)."""
-    if a < 0 or b < 0:
-        gs.raise_exception(f"geometric_mean requires non-negative values, got {a} and {b}.")
-    return math.sqrt(a * b)
-
-
-def harmonic_mean(a, b):
-    """Harmonic mean of two non-negative values: 2 * (a * b) / (a + b)."""
-    if a < 0 or b < 0:
-        gs.raise_exception(f"harmonic_mean requires non-negative values, got {a} and {b}.")
-    if a == 0 or b == 0:
-        return 0.0
-    return 2 * (a * b) / (a + b)
-
-
 def assert_gs_tensor(x):
     if not isinstance(x, gs.Tensor):
         gs.raise_exception("Only accepts genesis.Tensor.")
@@ -301,7 +312,7 @@ def tensor_to_cpu(x):
     return x
 
 
-def tensor_to_array(x: torch.Tensor, dtype: type[np.generic] | None = None) -> np.ndarray:
+def tensor_to_array(x: torch.Tensor, dtype: Type[np.generic] | None = None) -> np.ndarray:
     return np.asarray(tensor_to_cpu(x), dtype=dtype)
 
 
@@ -397,52 +408,149 @@ def has_display() -> bool:
         return False
 
 
-# -------------------------------------- QUADRANTS SPECIALIZATION --------------------------------------
+# -------------------------------------- TAICHI SPECIALIZATION --------------------------------------
+
+TI_PROG_WEAKREF: weakref.ReferenceType | None = None
+TI_MAPPING_KEY_CACHE: OrderedDict[int, Any] = OrderedDict()
+MAX_CACHE_SIZE = 1000
+
+
+def _ensure_compiled(self, *args):
+    # Note that the field is enough to determine the key because all the other arguments depends on it.
+    # This may not be the case anymore if the output is no longer dynamically allocated at some point.
+    cache_id = id(args[0])
+    key = TI_MAPPING_KEY_CACHE.get(cache_id)
+    if key is None:
+        extracted = []
+        for arg, kernel_arg in zip(args, self.mapper.arguments):
+            anno = kernel_arg.annotation
+            if is_ti_template(anno):
+                subkey = arg
+            else:  # isinstance(annotation, (ti.types.ndarray_type.NdarrayType, torch.Tensor, np.ndarray))
+                needs_grad = getattr(arg, "requires_grad", False) if anno.needs_grad is None else anno.needs_grad
+                subkey = (arg.dtype, len(arg.shape), needs_grad, anno.boundary)
+            extracted.append(subkey)
+        key = tuple(extracted)
+        TI_MAPPING_KEY_CACHE[cache_id] = key
+    instance_id = self.mapper.mapping.get(key)
+    if instance_id is None:
+        key = ti.lang.kernel_impl.Kernel.ensure_compiled(self, *args)
+    else:
+        key = (self.func, instance_id, self.autodiff_mode)
+    return key
+
+
+def _launch_kernel(self, t_kernel, compiled_kernel_data, *args):
+    launch_ctx = t_kernel.make_launch_context()
+
+    template_num = 0
+    for i, v in enumerate(args):
+        needed = self.arg_metas[i].annotation
+
+        # template
+        if is_ti_template(needed):
+            template_num += 1
+            continue
+
+        # ti.ndarray
+        if isinstance(v, ti.Ndarray):
+            v_primal = v.arr
+            v_grad = v.grad.arr if v.grad else None
+            if v_grad is None:
+                launch_ctx.set_arg_ndarray(i - template_num, v_primal)
+            else:
+                launch_ctx.set_arg_ndarray_with_grad(i - template_num, v_primal, v_grad)
+            continue
+
+        # ti.field
+        array_shape = v.shape
+        if needed.dtype is None or id(needed.dtype) in primitive_types.type_ids:
+            element_dim = 0
+        else:
+            is_soa = needed.layout == ti.Layout.SOA
+            element_dim = needed.dtype.ndim
+            array_shape = v.shape[element_dim:] if is_soa else v.shape[:-element_dim]
+
+        if isinstance(v, np.ndarray):  # numpy
+            arr_ptr = int(v.ctypes.data)
+            nbytes = v.nbytes
+            grad_ptr = 0  # nullptr
+        else:  # torch
+            if v.requires_grad and v.grad is None:
+                v.grad = torch.zeros_like(v)
+            if v.requires_grad:
+                if not isinstance(v.grad, torch.Tensor):
+                    raise ValueError(
+                        f"Expecting torch.Tensor for gradient tensor, but getting {v.grad.__class__.__name__} instead"
+                    )
+                if not v.grad.is_contiguous():
+                    raise ValueError(
+                        "Non contiguous gradient tensors are not supported, please call tensor.grad.contiguous() "
+                        "before passing it into taichi kernel."
+                    )
+
+            arr_ptr = int(v.data_ptr())
+            nbytes = v.element_size() * v.nelement()
+            grad_ptr = int(v.grad.data_ptr()) if v.grad is not None else 0
+
+        launch_ctx.set_arg_external_array_with_shape(i - template_num, arr_ptr, nbytes, array_shape, grad_ptr)
+
+    try:
+        prog = impl.get_runtime().prog
+        if compiled_kernel_data is None:
+            compile_result = prog.compile_kernel(prog.config(), prog.get_device_caps(), t_kernel)
+            compiled_kernel_data = compile_result.compiled_kernel_data
+        prog.launch_kernel(compiled_kernel_data, launch_ctx)
+    except Exception as e:
+        e = handle_exception_from_cpp(e)
+        if impl.get_runtime().print_full_traceback:
+            raise e
+        raise e from None
+
+
+def _destroy_callback(ref: weakref.ReferenceType):
+    global TI_PROG_WEAKREF
+    TI_MAPPING_KEY_CACHE.clear()
+    for kernel in TO_EXT_ARR_FAST_MAP.values():
+        kernel._primal.mapper.mapping.clear()
+    TI_PROG_WEAKREF = None
+
 
 _to_torch_type_fast = functools.lru_cache(maxsize=None)(to_pytorch_type)
 _to_numpy_type_fast = functools.lru_cache(maxsize=None)(to_numpy_type)
+TO_EXT_ARR_FAST_MAP = {}
+for data_type, func in (
+    (ti.ScalarField, tensor_to_ext_arr),
+    (ti.MatrixField, matrix_to_ext_arr),
+    (ti.ScalarNdarray, ndarray_to_ext_arr),
+    (ti.MatrixNdarray, ndarray_matrix_to_ext_arr),
+):
+    func = ti.kernel(func._primal.func)
+    func._primal.launch_kernel = types.MethodType(_launch_kernel, func._primal)
+    func._primal.ensure_compiled = types.MethodType(_ensure_compiled, func._primal)
+    TO_EXT_ARR_FAST_MAP[data_type] = func
 
-TO_EXT_ARR_FAST_MAP = dict(
-    (
-        (qd.ScalarField, tensor_to_ext_arr),
-        (qd.MatrixField, matrix_to_ext_arr),
-        (qd.ScalarNdarray, ndarray_to_ext_arr),
-        (qd.MatrixNdarray, ndarray_matrix_to_ext_arr),
-    )
-)
 
-
-def qd_to_python(
-    value: qd.Field | qd.Ndarray,
+def ti_to_python(
+    value: ti.Field | ti.Ndarray,
     transpose: bool = False,
     copy: bool | None = None,
     to_torch: bool = True,
 ) -> torch.Tensor | np.ndarray:
-    """Converts a Quadrants field / ndarray instance to a PyTorch tensor / Numpy array.
+    """Converts a GsTaichi field / ndarray instance to a PyTorch tensor / Numpy array.
 
     Args:
-        value (qd.Field | qd.Ndarray): Field or Ndarray to be converted.
+        value (ti.Field | ti.Ndarray): Field or Ndarray to be converted.
         transpose (bool, optional): Whether to move the last batch dimension in front. Defaults to False.
         copy (bool, optional): Wether to enforce returning a copy no matter what. None to avoid copy if possible
         without raising an exception if not.
         to_torch (bool): Whether to convert to Torch tensor or Numpy array. Defaults to True.
     """
-    # Get batch size if possible
-    try:
-        batch_shape = value.shape
-    except AttributeError:
-        if isinstance(value, qd.Matrix):
-            raise ValueError("Tensor of type 'qd.Vector', 'qd.Matrix' not supported.")
-        raise
-
     # Check if copy mode is supported while setting default mode if not specified.
-    # FIXME: Torch>2.9.1 still does not support bytes_offset for 0-dim dlpack.
+    # FIXME: ti.Field does not support zero-copy on Metal for now because of a bug in Torch itself.
+    # See: https://github.com/pytorch/pytorch/pull/168193
     data_type = type(value)
-    is_field = issubclass(data_type, qd.Field)
-    use_zerocopy = gs.use_zerocopy and (
-        (TORCH_MPS_SUPPORT_DLPACK_FIELD or gs.backend != gs.metal or not is_field)
-        and (batch_shape or not issubclass(data_type, qd.ScalarField))
-    )
+    use_zerocopy = gs.use_zerocopy and (gs.backend != gs.metal or not issubclass(data_type, ti.Field))
     if not use_zerocopy or (not to_torch and gs.backend != gs.cpu):
         if copy is False:
             gs.raise_exception(
@@ -454,6 +562,12 @@ def qd_to_python(
         copy = False
 
     # Leverage zero-copy if enabled
+    try:
+        batch_shape = value.shape
+    except AttributeError:
+        if isinstance(value, ti.Matrix):
+            raise ValueError("Tensor of type 'ti.Vector', 'ti.Matrix' not supported.")
+        raise
     if use_zerocopy:
         while True:
             try:
@@ -463,20 +577,20 @@ def qd_to_python(
                     out = value._T_np if transpose else value._np
                 break
             except AttributeError:
-                # "Cache" no-owning python-side views of the original Quadrants memory buffer as a hidden attribute
+                # FIXME: Field data is not properly initialized (not materialized) in memory at this point.
+                # DLPack will return garbage at best, or segfault right away if `ti.sync` is not called beforehand.
+                if issubclass(data_type, ti.Field):
+                    ti.sync()
+
+                # "Cache" no-owning python-side views of the original GsTaichi memory buffer as a hidden attribute
                 value_tc = torch.utils.dlpack.from_dlpack(value.to_dlpack())
-                if issubclass(data_type, qd.MatrixField) and value.m == 1:
+                if issubclass(data_type, ti.MatrixField) and value.m == 1:
                     value_tc = value_tc.reshape((*batch_shape, value.n))
                 value._tc = value_tc
                 value._T_tc = value_tc.movedim(batch_ndim - 1, 0) if (batch_ndim := len(batch_shape)) > 1 else value_tc
                 if gs.backend == gs.cpu:
                     value._np = value_tc.numpy()
                     value._T_np = value._T_tc.numpy()
-
-        # FIXME: DLPack may return old values on Apple Metal if sync is not systematically called manually
-        if gs.backend == gs.metal:
-            qd.sync()
-
         if copy:
             if to_torch:
                 out = out.clone()
@@ -486,18 +600,23 @@ def qd_to_python(
                 out = out.copy()
         return out
 
+    # Keep track of taichi runtime to automatically clear cache if destroyed
+    global TI_PROG_WEAKREF
+    if TI_PROG_WEAKREF is None:
+        TI_PROG_WEAKREF = weakref.ref(impl.get_runtime().prog, _destroy_callback)
+
     # Extract value as a whole.
     # Note that this is usually much faster than using a custom kernel to extract a slice.
-    # The implementation is based on `quadrants.lang.(ScalarField | MatrixField).to_torch`.
+    # The implementation is based on `taichi.lang.(ScalarField | MatrixField).to_torch`.
     is_metal = gs.device.type == "mps"
     out_dtype = _to_torch_type_fast(value.dtype) if to_torch else _to_numpy_type_fast(value.dtype)
-    if issubclass(data_type, (qd.ScalarField, qd.ScalarNdarray)):
+    if issubclass(data_type, (ti.ScalarField, ti.ScalarNdarray)):
         if to_torch:
             out = torch.zeros(batch_shape, dtype=out_dtype, device="cpu" if is_metal else gs.device)
         else:
             out = np.zeros(batch_shape, dtype=out_dtype)
         TO_EXT_ARR_FAST_MAP[data_type](value, out)
-    elif issubclass(data_type, qd.MatrixField):
+    elif issubclass(data_type, ti.MatrixField):
         as_vector = value.m == 1
         shape_ext = (value.n,) if as_vector else (value.n, value.m)
         if to_torch:
@@ -505,15 +624,15 @@ def qd_to_python(
         else:
             out = np.zeros(batch_shape + shape_ext, dtype=out_dtype)
         TO_EXT_ARR_FAST_MAP[data_type](value, out, as_vector)
-    elif issubclass(data_type, (qd.VectorNdarray, qd.MatrixNdarray)):
+    elif issubclass(data_type, (ti.VectorNdarray, ti.MatrixNdarray)):
         layout_is_aos = 1
-        as_vector = issubclass(data_type, qd.VectorNdarray)
+        as_vector = issubclass(data_type, ti.VectorNdarray)
         shape_ext = (value.n,) if as_vector else (value.n, value.m)
         if to_torch:
             out = torch.empty(batch_shape + shape_ext, dtype=out_dtype, device="cpu" if is_metal else gs.device)
         else:
             out = np.zeros(batch_shape + shape_ext, dtype=out_dtype)
-        TO_EXT_ARR_FAST_MAP[qd.MatrixNdarray](value, out, layout_is_aos, as_vector)
+        TO_EXT_ARR_FAST_MAP[ti.MatrixNdarray](value, out, layout_is_aos, as_vector)
     else:
         gs.raise_exception(f"Unsupported type '{type(value)}'.")
     if to_torch and is_metal:
@@ -612,8 +731,8 @@ def indices_to_mask(
     return tuple(mask)
 
 
-def qd_to_torch(
-    value: qd.Field | qd.Ndarray,
+def ti_to_torch(
+    value: ti.Field | ti.Ndarray,
     row_mask: int | range | slice | tuple[int, ...] | list[int] | torch.Tensor | np.ndarray | None = None,
     col_mask: int | range | slice | tuple[int, ...] | list[int] | torch.Tensor | np.ndarray | None = None,
     keepdim: bool = True,
@@ -621,10 +740,10 @@ def qd_to_torch(
     *,
     copy: bool | None = None,
 ) -> torch.Tensor:
-    """Converts a Quadrants field / ndarray instance to a PyTorch tensor.
+    """Converts a GsTaichi field / ndarray instance to a PyTorch tensor.
 
     Args:
-        value (qd.Field | qd.Ndarray): Field or Ndarray to be converted.
+        value (ti.Field | ti.Ndarray): Field or Ndarray to be converted.
         row_mask (optional): Rows to extract from batch dimension after transpose if requested.
         col_mask (optional): Columns to extract from batch dimension after transpose if requested.
         keepdim (bool): Whether to keep all dimensions even if masks are integers.
@@ -637,15 +756,12 @@ def qd_to_torch(
     if gs.use_zerocopy:
         try:
             tensor = value._T_tc if transpose else value._tc
-            # FIXME: DLPack may return old values on Apple Metal if sync is not systematically called manually
-            if gs.backend == gs.metal:
-                qd.sync()
             if copy:
                 tensor = tensor.clone()
         except AttributeError:
-            tensor = qd_to_python(value, transpose, copy=copy, to_torch=True)
+            tensor = ti_to_python(value, transpose, copy=copy, to_torch=True)
     else:
-        tensor = qd_to_python(value, transpose, copy=copy, to_torch=True)
+        tensor = ti_to_python(value, transpose, copy=copy, to_torch=True)
 
     if row_mask is None and col_mask is None:
         return tensor
@@ -662,8 +778,8 @@ def qd_to_torch(
     return tensor[mask]
 
 
-def qd_to_numpy(
-    value: qd.Field | qd.Ndarray,
+def ti_to_numpy(
+    value: ti.Field | ti.Ndarray,
     row_mask: int | range | slice | tuple[int, ...] | list[int] | torch.Tensor | np.ndarray | None = None,
     col_mask: int | range | slice | tuple[int, ...] | list[int] | torch.Tensor | np.ndarray | None = None,
     keepdim: bool = True,
@@ -671,10 +787,10 @@ def qd_to_numpy(
     *,
     copy: bool | None = None,
 ) -> np.ndarray:
-    """Converts a Quadrants field / ndarray instance to a Numpy array.
+    """Converts a GsTaichi field / ndarray instance to a Numpy array.
 
     Args:
-        value (qd.Field | qd.Ndarray): Field or Ndarray to be converted.
+        value (ti.Field | ti.Ndarray): Field or Ndarray to be converted.
         row_mask (optional): Rows to extract from batch dimension after transpose if requested.
         col_mask (optional): Columns to extract from batch dimension after transpose if requested.
         keepdim (bool, optional): Whether to keep all dimensions even if masks are integers.
@@ -682,7 +798,7 @@ def qd_to_numpy(
         copy (bool, optional): Wether to enforce returning a copy no matter what. None to avoid copy if possible
         without raising an exception if not.
     """
-    tensor = qd_to_python(value, transpose, copy=copy, to_torch=False)
+    tensor = ti_to_python(value, transpose, copy=copy, to_torch=False)
     if row_mask is None and col_mask is None:
         return tensor
 
@@ -891,8 +1007,6 @@ def assign_indexed_tensor(
     value: "np.typing.ArrayLike",
     dim_names: tuple[str, ...] | list[str] | None = None,
 ) -> None:
-    if isinstance(tensor, np.ndarray):
-        value = torch.as_tensor(value)
     try:
         tensor[indices] = value
     except (TypeError, RuntimeError):

@@ -1,10 +1,10 @@
 import functools
-from pathlib import Path
 
 import numpy as np
-import quadrants as qd
+import gstaichi as ti
 import torch
 import trimesh
+from scipy.spatial import KDTree
 
 import genesis as gs
 import genesis.utils.geom as gu
@@ -26,7 +26,7 @@ def assert_active(method):
     return wrapper
 
 
-@qd.data_oriented
+@ti.data_oriented
 class ParticleEntity(Entity):
     """
     Base class for particle-based entity.
@@ -70,9 +70,8 @@ class ParticleEntity(Entity):
         vvert_start=None,
         vface_start=None,
         need_skinning=True,
-        name: str | None = None,
     ):
-        super().__init__(idx, scene, morph, solver, material, surface, name=name)
+        super().__init__(idx, scene, morph, solver, material, surface)
 
         self._particle_size = particle_size
         self._particle_start = particle_start
@@ -192,15 +191,10 @@ class ParticleEntity(Entity):
 
     def _add_vverts_to_solver(self):
         # Compute supports for rendering vverts using neighboring particles
-        dist2 = np.sum(np.square(self._vverts[:, None, :] - self._particles[None, :, :]), axis=2)
-        support_idxs = np.argpartition(dist2, self.solver._n_vvert_supports - 1, axis=1)[
-            :, : self.solver._n_vvert_supports
-        ]
-        row_indices = np.arange(dist2.shape[0])[:, None]
-        sorted_order = np.lexsort((support_idxs, dist2[row_indices, support_idxs]))
-        support_idxs = support_idxs[row_indices, sorted_order].astype(gs.np_int)
+        kdtree = KDTree(self._particles)
+        _, support_idxs = kdtree.query(self._vverts, k=self.solver._n_vvert_supports)
+        support_idxs = support_idxs.astype(gs.np_int)
         support_idxs = np.clip(support_idxs, 0, len(self._particles) - 1)
-
         all_ps = self._particles[support_idxs]
         Ps = all_ps[:, :-1].swapaxes(-2, -1) - np.expand_dims(all_ps[:, -1], axis=-1)
         P_invs = np.linalg.pinv(Ps)
@@ -212,13 +206,13 @@ class ParticleEntity(Entity):
             support_idxs_local=support_idxs,
         )
 
-    @qd.kernel
+    @ti.kernel
     def _kernel_add_vverts_to_solver(
         self,
-        vverts: qd.types.ndarray(element_dim=1),
-        particles: qd.types.ndarray(element_dim=1),
-        P_invs: qd.types.ndarray(element_dim=2),
-        support_idxs_local: qd.types.ndarray(),
+        vverts: ti.types.ndarray(element_dim=1),
+        particles: ti.types.ndarray(element_dim=1),
+        P_invs: ti.types.ndarray(element_dim=2),
+        support_idxs_local: ti.types.ndarray(),
     ):
         for i_vv_ in range(self.n_vverts):
             i_vv = i_vv_ + self._vvert_start
@@ -244,11 +238,11 @@ class ParticleEntity(Entity):
 
         if isinstance(self._morph, gs.options.morphs.MeshSet):
             particles = []
-            mesh_data = self._morph.model_dump()
-            del mesh_data["files"], mesh_data["poss"], mesh_data["eulers"], mesh_data["quat"]
             for i, file in enumerate(self._morph.files):
-                mesh_data.update(file=file, pos=self._morph.poss[i], euler=self._morph.eulers[i])
-                morph_i = gs.morphs.Mesh(**mesh_data)
+                morph_i = self._morph.model_copy()
+                morph_i.file = file
+                morph_i.pos = morph_i.poss[i]
+                morph_i.euler = morph_i.eulers[i]
                 mesh_i = morph_i.file.copy()
                 mesh_i.vertices = mesh_i.vertices * morph_i.scale
 
@@ -281,7 +275,7 @@ class ParticleEntity(Entity):
 
         if isinstance(self._morph, gs.options.morphs.Nowhere):
             self._vverts = np.zeros((0, 3), dtype=gs.np_float)
-            self._vfaces = np.zeros((0, 3), dtype=gs.np_int)
+            self._vfaces = np.zeros((0, 3), dtype=gs.np_float)
             origin = gu.nowhere()
         elif isinstance(self._morph, gs.options.morphs.MeshSet):
             for i in range(len(self._morph.files)):
@@ -316,10 +310,10 @@ class ParticleEntity(Entity):
 
             if self._need_skinning:
                 self._vverts = np.asarray(self._vmesh.verts, dtype=gs.np_float)
-                self._vfaces = np.asarray(self._vmesh.faces, dtype=gs.np_int)
+                self._vfaces = np.asarray(self._vmesh.faces, dtype=gs.np_float)
             else:
                 self._vverts = np.zeros((0, 3), dtype=gs.np_float)
-                self._vfaces = np.zeros((0, 3), dtype=gs.np_int)
+                self._vfaces = np.zeros((0, 3), dtype=gs.np_float)
             origin = np.mean(self._morph.poss, dtype=gs.np_float)
         else:
             # transform vmesh
@@ -343,10 +337,10 @@ class ParticleEntity(Entity):
 
             if self._need_skinning:
                 self._vverts = np.asarray(self._vmesh.verts, dtype=gs.np_float)
-                self._vfaces = np.asarray(self._vmesh.faces, dtype=gs.np_int)
+                self._vfaces = np.asarray(self._vmesh.faces, dtype=gs.np_float)
             else:
                 self._vverts = np.zeros((0, 3), dtype=gs.np_float)
-                self._vfaces = np.zeros((0, 3), dtype=gs.np_int)
+                self._vfaces = np.zeros((0, 3), dtype=gs.np_float)
             origin = np.asarray(self._morph.pos, dtype=gs.np_float)
 
         self._particles = np.asarray(particles, dtype=gs.np_float, order="C")
@@ -474,11 +468,11 @@ class ParticleEntity(Entity):
         """
         _tgt_pos = self._tgt_buffer["pos"].pop()
         if _tgt_pos is not None and _tgt_pos.requires_grad:
-            _tgt_pos._backward_from_qd(self._set_particles_pos_grad)
+            _tgt_pos._backward_from_ti(self._set_particles_pos_grad)
 
         _tgt_vel = self._tgt_buffer["vel"].pop()
         if _tgt_vel is not None and _tgt_vel.requires_grad:
-            _tgt_vel._backward_from_qd(self._set_particles_vel_grad)
+            _tgt_vel._backward_from_ti(self._set_particles_vel_grad)
 
         # Manually zero the grad since manually setting state breaks gradient flow
         if _tgt_vel is not None or _tgt_pos is not None:
@@ -688,7 +682,6 @@ class ParticleEntity(Entity):
         """
         raise NotImplementedError
 
-    @gs.assert_built
     def get_mass(self, envs_idx=None):
         """
         Return the total mass of the entity.
@@ -696,7 +689,7 @@ class ParticleEntity(Entity):
         Parameters
         ----------
         envs_idx : None | int | array_like, shape (M,), optional
-            The indices of the environments to query. If None, all environments will be considered. Defaults to None.
+            The indices of the environments to set. If None, all environments will be considered. Defaults to None.
 
         Returns
         -------
@@ -704,8 +697,8 @@ class ParticleEntity(Entity):
             The computed total mass.
         """
         envs_idx = self._scene._sanitize_envs_idx(envs_idx)
-        mass = torch.zeros((len(envs_idx),), dtype=gs.tc_float, device=gs.device)
-        self.solver._kernel_get_mass(self._particle_start, self.n_particles, mass, envs_idx)
+        mass = torch.empty((len(envs_idx),), dtype=gs.tc_float, device=gs.device)
+        self.solver._kernel_get_mass(mass, envs_idx)
         return mass
 
     # ------------------------------------------------------------------------------------
@@ -741,25 +734,6 @@ class ParticleEntity(Entity):
         if self._scene.n_envs == 0:
             closest_idx = closest_idx[0]
         return closest_idx
-
-    # ------------------------------------------------------------------------------------
-    # --------------------------------- naming methods -----------------------------------
-    # ------------------------------------------------------------------------------------
-
-    def _get_morph_identifier(self) -> str:
-        morph = self._morph
-
-        if isinstance(morph, gs.morphs.Box):
-            return "box"
-        if isinstance(morph, gs.morphs.Sphere):
-            return "sphere"
-        if isinstance(morph, gs.morphs.Cylinder):
-            return "cylinder"
-        if isinstance(morph, gs.morphs.Mesh):
-            return Path(morph.file).stem
-        if isinstance(morph, gs.morphs.Nowhere):
-            return "emitter"
-        return "particle"
 
     # ------------------------------------------------------------------------------------
     # ----------------------------------- properties -------------------------------------

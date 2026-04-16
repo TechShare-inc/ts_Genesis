@@ -2,13 +2,15 @@ import os
 import xml.etree.ElementTree as ET
 
 import torch
+import gstaichi as ti
 
 import genesis as gs
-from genesis.utils.misc import get_assets_dir
+from genesis.utils.misc import get_assets_dir, broadcast_tensor
 
 from .rigid_entity import RigidEntity
 
 
+@ti.data_oriented
 class DroneEntity(RigidEntity):
     def _load_scene(self, morph, surface):
         super()._load_scene(morph, surface)
@@ -42,13 +44,13 @@ class DroneEntity(RigidEntity):
         self._propellers_revs = torch.zeros((self._n_propellers, self.solver._B), dtype=gs.tc_float, device=gs.device)
         self._prev_prop_t = None
 
-    def set_propellers_rpm(self, propellers_rpm):
+    def set_propellels_rpm(self, propellels_rpm):
         """
         Set the RPM (revolutions per minute) for each propeller in the drone.
 
         Parameters
         ----------
-        propellers_rpm : array-like or torch.Tensor
+        propellels_rpm : array-like or torch.Tensor
             A tensor or array of shape (n_propellers,) or (n_envs, n_propellers) specifying
             the desired RPM values for each propeller. Must be non-negative.
 
@@ -59,25 +61,26 @@ class DroneEntity(RigidEntity):
             does not match the number of propellers, or contains negative values.
         """
         if self._prev_prop_t == self.sim.cur_step_global:
-            gs.raise_exception("`set_propellers_rpm` can only be called once per step.")
+            gs.raise_exception("`set_propellels_rpm` can only be called once per step.")
         self._prev_prop_t = self.sim.cur_step_global
 
-        assert propellers_rpm is not None
-        propellers_rpm, *_ = self._solver._sanitize_io_variables(
-            propellers_rpm, self._propellers_link_idx, self._n_propellers, "propellers_link_idx"
+        assert propellels_rpm is not None
+        propellels_rpm, *_ = self._solver._sanitize_io_variables(
+            propellels_rpm, self._propellers_link_idx, self._n_propellers, "propellers_link_idx"
         )
         if self._scene.n_envs == 0:
-            propellers_rpm = propellers_rpm[None]
+            propellels_rpm = propellels_rpm[None]
 
         # FIXME: This check is too expensive
-        # if (propellers_rpm < 0.0).any():
-        #     gs.raise_exception("`propellers_rpm` cannot be negative.")
+        # if (propellels_rpm < 0.0).any():
+        #     gs.raise_exception("`propellels_rpm` cannot be negative.")
 
-        self._propellers_revs = (self._propellers_revs + propellers_rpm.T) % (60 / self.solver.dt)
+        self._propellers_revs = (self._propellers_revs + propellels_rpm.T) % (60 / self.solver.dt)
 
         self.solver.set_drone_rpm(
+            self._n_propellers,
             self._propellers_link_idx,
-            propellers_rpm,
+            propellels_rpm,
             self._propellers_spin,
             self.KF,
             self.KM,
@@ -92,7 +95,7 @@ class DroneEntity(RigidEntity):
         """
         if self._animate_propellers:
             self.solver.update_drone_propeller_vgeoms(
-                self._propellers_vgeom_idxs, self._propellers_revs, self._propellers_spin
+                self._n_propellers, self._propellers_vgeom_idxs, self._propellers_revs, self._propellers_spin
             )
 
     @property

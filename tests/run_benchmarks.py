@@ -1,7 +1,9 @@
 import os
 import subprocess
 import tempfile
+from traceback import TracebackException
 
+import pytest
 
 START_REF = "v0.2.1"
 END_REF = "upstream/main"
@@ -39,7 +41,7 @@ with tempfile.NamedTemporaryFile("w", suffix=".sh") as fd:
     os.chmod(fd.name, 0o755)  # Make the script executable
 
     for i, commit in enumerate(commits):
-        print(f"\n[{i + 1}/{len(commits)}] Checking out {commit}")
+        print(f"\n[{i+1}/{len(commits)}] Checking out {commit}")
         subprocess.run(["git", "checkout", "-f", commit], check=True)
 
         print("================= ...Running benchmarks... ==================")

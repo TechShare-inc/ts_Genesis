@@ -1,3 +1,4 @@
+import numpy as np
 from numba import *
 from numba import types
 from numba.extending import (
@@ -77,7 +78,6 @@ class GLWrapper:
             ("glBindBuffer", (GLvoid, GLenum, GLuint)),
             ("glBufferData", (GLvoid, GLenum, GLsizeiptr, GLvoidp, GLenum)),
             ("glBufferSubData", (GLvoid, GLenum, GLintptr, GLsizeiptr, GLvoidp)),
-            ("glVertexAttribPointer", (GLvoid, GLuint, GLint, GLenum, GLboolean, GLsizei, GLvoidp)),
         ):
             try:
                 load_func(name, *signature)

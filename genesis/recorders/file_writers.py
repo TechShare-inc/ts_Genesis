@@ -1,5 +1,4 @@
 import csv
-import logging
 import os
 from collections import defaultdict
 from pathlib import Path
@@ -22,9 +21,6 @@ try:
     import av
 except ImportError:
     pass
-
-
-LOGGER = logging.getLogger(__name__)
 
 
 class BaseFileWriter(Recorder):
@@ -142,7 +138,7 @@ class VideoFileWriter(BaseFileWriter):
                     self.video_container.mux(packet)
             self.video_container.close()
 
-            (gs.logger or LOGGER).info(f'Video saved to "~<{self._options.filename}>~".')
+            gs.logger.info(f'Video saved to "~<{self._options.filename}>~".')
 
             self.video_container = None
             self.video_stream = None
@@ -205,7 +201,7 @@ class CSVFileWriter(BaseFileWriter):
         if self.file_handle:
             if self.wrote_data:
                 self.file_handle.close()
-                (gs.logger or LOGGER).info(f'[CSVFileWriter] Saved to ~<"{self._get_filename()}">~.')
+                gs.logger.info(f'[CSVFileWriter] Saved to ~<"{self._get_filename()}">~.')
             else:
                 self.file_handle.close()
                 os.remove(self._get_filename())  # delete empty file
@@ -239,11 +235,9 @@ class NPZFileWriter(BaseFileWriter):
             try:
                 np.savez_compressed(filename, **self.all_data)
             except ValueError as error:
-                (gs.logger or LOGGER).warning(f"NPZFileWriter: saving as dtype=object due to ValueError: {error}")
+                gs.logger.warning(f"NPZFileWriter: saving as dtype=object due to ValueError: {error}")
                 np.savez_compressed(filename, **{k: np.array(v, dtype=object) for k, v in self.all_data.items()})
-            (gs.logger or LOGGER).info(
-                f'[NPZFileWriter] Saved data with keys {list(self.all_data.keys())} to ~<"{filename}">~.'
-            )
+            gs.logger.info(f'[NPZFileWriter] Saved data with keys {list(self.all_data.keys())} to ~<"{filename}">~.')
             self.all_data.clear()
 
     @property

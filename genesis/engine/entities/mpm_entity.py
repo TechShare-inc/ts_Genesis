@@ -1,6 +1,6 @@
 import functools
 
-import quadrants as qd
+import gstaichi as ti
 import torch
 
 import genesis as gs
@@ -20,7 +20,7 @@ def assert_muscle(method):
     return wrapper
 
 
-@qd.data_oriented
+@ti.data_oriented
 class MPMEntity(ParticleEntity):
     """
     MPM-based particle entity.
@@ -50,18 +50,7 @@ class MPMEntity(ParticleEntity):
     """
 
     def __init__(
-        self,
-        scene,
-        solver,
-        material,
-        morph,
-        surface,
-        particle_size,
-        idx,
-        particle_start,
-        vvert_start,
-        vface_start,
-        name: str | None = None,
+        self, scene, solver, material, morph, surface, particle_size, idx, particle_start, vvert_start, vface_start
     ):
         need_skinning = not isinstance(
             material, (gs.materials.MPM.Liquid, gs.materials.MPM.Sand, gs.materials.MPM.Snow)
@@ -78,7 +67,6 @@ class MPMEntity(ParticleEntity):
             vvert_start,
             vface_start,
             need_skinning=need_skinning,
-            name=name,
         )
 
     def init_tgt_keys(self):
@@ -116,8 +104,8 @@ class MPMEntity(ParticleEntity):
         """
         self._reset_frame_grad(self._sim.cur_substep_local)
 
-    @qd.kernel
-    def _reset_frame_grad(self, f: qd.i32):
+    @ti.kernel
+    def _reset_frame_grad(self, f: ti.i32):
         """
         Clear all gradients for particle properties at the given substep.
 
@@ -126,7 +114,7 @@ class MPMEntity(ParticleEntity):
         f : int
             The current substep index.
         """
-        for i_p, i_b in qd.ndrange(self.n_particles, self._sim._B):
+        for i_p, i_b in ti.ndrange(self.n_particles, self._sim._B):
             i_global = i_p + self._particle_start
             self._solver.particles.grad[f, i_global, i_b].pos = 0
             self._solver.particles.grad[f, i_global, i_b].vel = 0
@@ -168,8 +156,8 @@ class MPMEntity(ParticleEntity):
             state.Jp.assert_contiguous()
             self._kernel_add_frame_particles_Jp_grad(self._sim.cur_substep_local, state.Jp.grad)
 
-    @qd.kernel
-    def _kernel_add_frame_particles_pos_grad(self, f: qd.i32, poss_grad: qd.types.ndarray()):
+    @ti.kernel
+    def _kernel_add_frame_particles_pos_grad(self, f: ti.i32, poss_grad: ti.types.ndarray()):
         """
         Accumulate gradients to particle positions at the given substep.
 
@@ -180,13 +168,13 @@ class MPMEntity(ParticleEntity):
         poss_grad : ndarray
             Gradient of particle positions, shape (B, n_particles, 3).
         """
-        for i_p, i_b in qd.ndrange(self.n_particles, self._sim._B):
+        for i_p, i_b in ti.ndrange(self.n_particles, self._sim._B):
             i_global = i_p + self._particle_start
-            for j in qd.static(range(3)):
+            for j in ti.static(range(3)):
                 self._solver.particles.grad[f, i_global, i_b].pos[j] += poss_grad[i_b, i_p, j]
 
-    @qd.kernel
-    def _kernel_add_frame_particles_vel_grad(self, f: qd.i32, vels_grad: qd.types.ndarray()):
+    @ti.kernel
+    def _kernel_add_frame_particles_vel_grad(self, f: ti.i32, vels_grad: ti.types.ndarray()):
         """
         Accumulate gradients to particle velocities at the given substep.
 
@@ -197,13 +185,13 @@ class MPMEntity(ParticleEntity):
         vels_grad : ndarray
             Gradient of particle velocities, shape (B, n_particles, 3).
         """
-        for i_p, i_b in qd.ndrange(self.n_particles, self._sim._B):
+        for i_p, i_b in ti.ndrange(self.n_particles, self._sim._B):
             i_global = i_p + self._particle_start
-            for j in qd.static(range(3)):
+            for j in ti.static(range(3)):
                 self._solver.particles.grad[f, i_global, i_b].vel[j] += vels_grad[i_b, i_p, j]
 
-    @qd.kernel
-    def _kernel_add_frame_particles_C_grad(self, f: qd.i32, C_grad: qd.types.ndarray()):
+    @ti.kernel
+    def _kernel_add_frame_particles_C_grad(self, f: ti.i32, C_grad: ti.types.ndarray()):
         """
         Accumulate gradients to affine matrices C at the given substep.
 
@@ -214,14 +202,14 @@ class MPMEntity(ParticleEntity):
         C_grad : ndarray
             Gradient of C matrices, shape (B, n_particles, 3, 3).
         """
-        for i_p, i_b in qd.ndrange(self.n_particles, self._sim._B):
+        for i_p, i_b in ti.ndrange(self.n_particles, self._sim._B):
             i_global = i_p + self._particle_start
-            for j in qd.static(range(3)):
-                for k in qd.static(range(3)):
+            for j in ti.static(range(3)):
+                for k in ti.static(range(3)):
                     self._solver.particles.grad[f, i_global, i_b].C[j, k] += C_grad[i_b, i_p, j, k]
 
-    @qd.kernel
-    def _kernel_add_frame_particles_F_grad(self, f: qd.i32, F_grad: qd.types.ndarray()):
+    @ti.kernel
+    def _kernel_add_frame_particles_F_grad(self, f: ti.i32, F_grad: ti.types.ndarray()):
         """
         Accumulate gradients to deformation gradients F at the given substep.
 
@@ -232,14 +220,14 @@ class MPMEntity(ParticleEntity):
         F_grad : ndarray
             Gradient of F matrices, shape (B, n_particles, 3, 3).
         """
-        for i_p, i_b in qd.ndrange(self.n_particles, self._sim._B):
+        for i_p, i_b in ti.ndrange(self.n_particles, self._sim._B):
             i_global = i_p + self._particle_start
-            for j in qd.static(range(3)):
-                for k in qd.static(range(3)):
+            for j in ti.static(range(3)):
+                for k in ti.static(range(3)):
                     self._solver.particles.grad[f, i_global, i_b].F[j, k] += F_grad[i_b, i_p, j, k]
 
-    @qd.kernel
-    def _kernel_add_frame_particles_Jp_grad(self, f: qd.i32, Jp_grad: qd.types.ndarray()):
+    @ti.kernel
+    def _kernel_add_frame_particles_Jp_grad(self, f: ti.i32, Jp_grad: ti.types.ndarray()):
         """
         Accumulate gradients to plastic volume ratios Jp at the given substep.
 
@@ -250,7 +238,7 @@ class MPMEntity(ParticleEntity):
         Jp_grad : ndarray
             Gradient of Jp values, shape (B, n_particles).
         """
-        for i_p, i_b in qd.ndrange(self.n_particles, self._sim._B):
+        for i_p, i_b in ti.ndrange(self.n_particles, self._sim._B):
             i_global = i_p + self._particle_start
             self._solver.particles.grad[f, i_global, i_b].Jp += Jp_grad[i_b, i_p]
 
@@ -270,7 +258,7 @@ class MPMEntity(ParticleEntity):
         if isinstance(self.material, gs.materials.MPM.Muscle):
             _tgt_actu = self._tgt_buffer["actu"].pop()
             if _tgt_actu is not None and _tgt_actu.requires_grad:
-                _tgt_actu._backward_from_qd(self._set_particles_actu_grad)
+                _tgt_actu._backward_from_ti(self._set_particles_actu_grad)
 
         super().process_input_grad()
 
@@ -301,16 +289,16 @@ class MPMEntity(ParticleEntity):
 
         return state
 
-    @qd.kernel
+    @ti.kernel
     def get_frame(
         self,
-        f: qd.i32,
-        pos: qd.types.ndarray(),  # shape [B, n_particles, 3]
-        vel: qd.types.ndarray(),  # shape [B, n_particles, 3]
-        C: qd.types.ndarray(),  # shape [B, n_particles, 3, 3]
-        F: qd.types.ndarray(),  # shape [B, n_particles, 3, 3]
-        Jp: qd.types.ndarray(),  # shape [B, n_particles]
-        active: qd.types.ndarray(),  # shape [B, n_particles]
+        f: ti.i32,
+        pos: ti.types.ndarray(),  # shape [B, n_particles, 3]
+        vel: ti.types.ndarray(),  # shape [B, n_particles, 3]
+        C: ti.types.ndarray(),  # shape [B, n_particles, 3, 3]
+        F: ti.types.ndarray(),  # shape [B, n_particles, 3, 3]
+        Jp: ti.types.ndarray(),  # shape [B, n_particles]
+        active: ti.types.ndarray(),  # shape [B, n_particles]
     ):
         """
         Extract the state of particles at the given substep.
@@ -332,14 +320,14 @@ class MPMEntity(ParticleEntity):
         active : ndarray
             Particle activeness state, shape (B, n_particles).
         """
-        for i_p, i_b in qd.ndrange(self.n_particles, self._sim._B):
+        for i_p, i_b in ti.ndrange(self.n_particles, self._sim._B):
             i_global = i_p + self._particle_start
             # Copy pos, vel
-            for j in qd.static(range(3)):
+            for j in ti.static(range(3)):
                 pos[i_b, i_p, j] = self._solver.particles[f, i_global, i_b].pos[j]
                 vel[i_b, i_p, j] = self._solver.particles[f, i_global, i_b].vel[j]
                 # Copy C, F
-                for k in qd.static(range(3)):
+                for k in ti.static(range(3)):
                     C[i_b, i_p, j, k] = self._solver.particles[f, i_global, i_b].C[j, k]
                     F[i_b, i_p, j, k] = self._solver.particles[f, i_global, i_b].F[j, k]
             # Copy Jp, active
@@ -593,105 +581,3 @@ class MPMEntity(ParticleEntity):
         free = self._sanitize_particles_tensor(None, gs.tc_bool)
         self.solver._kernel_get_particles_free(self._particle_start, self._n_particles, free)
         return free
-
-    # ------------------------------------------------------------------------------------
-    # ------------------------------ particle constraints --------------------------------
-    # ------------------------------------------------------------------------------------
-
-    @gs.assert_built
-    def get_particles_in_bbox(self, bbox_min, bbox_max):
-        """
-        Get boolean mask for particles within a bounding box.
-
-        Parameters
-        ----------
-        bbox_min : array_like, shape (3,)
-            Minimum corner of the bounding box [x, y, z].
-        bbox_max : array_like, shape (3,)
-            Maximum corner of the bounding box [x, y, z].
-
-        Returns
-        -------
-        mask : torch.Tensor, shape (n_envs, n_particles)
-            Boolean mask where True indicates particle is within the bounding box.
-        """
-        bbox_min = torch.as_tensor(bbox_min, dtype=gs.tc_float, device=gs.device)
-        bbox_max = torch.as_tensor(bbox_max, dtype=gs.tc_float, device=gs.device)
-
-        # Get particle positions: shape (n_envs, n_particles, 3)
-        poss = self.get_particles_pos()
-        if poss.ndim == 2:
-            poss = poss.unsqueeze(0)  # (1, n_particles, 3)
-
-        # Vectorized bbox check: (n_envs, n_particles)
-        mask = ((bbox_min <= poss) & (poss <= bbox_max)).all(dim=-1)
-        return mask
-
-    @gs.assert_built
-    def set_particle_constraints(self, particles_mask, link_idx, stiffness):
-        """
-        Attach MPM particles to a rigid link using soft constraints.
-
-        The particles will be pulled toward their relative position on the link
-        using spring forces with critical damping.
-
-        Parameters
-        ----------
-        particles_mask : torch.Tensor, shape (n_envs, n_particles)
-            Boolean mask indicating which particles to constrain.
-        link_idx : int
-            Index of the rigid link to attach particles to.
-        stiffness : float
-            Spring stiffness for the constraint.
-        """
-        if not isinstance(link_idx, int):
-            gs.raise_exception("link_idx must be an integer.")
-
-        if not self._solver._constraints_initialized:
-            self._solver.init_constraints()
-
-        # Get link position and quaternion for all envs
-        rigid_solver = self._sim.coupler.rigid_solver
-        link_pos = rigid_solver.get_links_pos(links_idx=[link_idx])  # (n_envs, 1, 3)
-        link_quat = rigid_solver.get_links_quat(links_idx=[link_idx])  # (n_envs, 1, 4)
-        if link_pos.ndim == 2:
-            link_pos = link_pos.unsqueeze(0)
-            link_quat = link_quat.unsqueeze(0)
-        link_pos = link_pos[:, 0, :]  # (n_envs, 3)
-        link_quat = link_quat[:, 0, :]  # (n_envs, 4)
-
-        self._solver._kernel_set_particle_constraints(
-            self._sim.cur_substep_local,
-            particles_mask,
-            self._particle_start,
-            stiffness,
-            link_idx,
-            link_pos,
-            link_quat,
-        )
-
-    @gs.assert_built
-    def remove_particle_constraints(self, particles_mask=None):
-        """
-        Remove constraints from specified particles, or all if None.
-
-        Parameters
-        ----------
-        particles_mask : torch.Tensor, shape (n_envs, n_particles), optional
-            Boolean mask indicating which particles to unconstrain. If None, removes all constraints for this entity.
-        """
-        if not self._solver._constraints_initialized:
-            return
-
-        # Remove all constraints for this entity if mask not specified
-        if particles_mask is None:
-            particles_mask = torch.ones((self._sim._B, self.n_particles), dtype=torch.bool, device=gs.device)
-
-        self._solver._kernel_remove_particle_constraints(particles_mask, self._particle_start)
-
-    # ------------------------------------------------------------------------------------
-    # --------------------------------- naming methods -----------------------------------
-    # ------------------------------------------------------------------------------------
-
-    def _get_morph_identifier(self) -> str:
-        return f"mpm_{super()._get_morph_identifier()}"

@@ -6,6 +6,7 @@ https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_mate
 Author: Matthew Matl
 """
 
+import abc
 from abc import ABCMeta
 
 import numpy as np
@@ -88,6 +89,7 @@ class Material(metaclass=ABCMeta):
         smooth=True,
         wireframe=False,
     ):
+
         # Set defaults
         if alphaMode is None:
             alphaMode = "OPAQUE"

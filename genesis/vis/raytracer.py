@@ -15,7 +15,7 @@ try:
     sys.path.append(os.path.join(miscu.get_src_dir(), "ext/LuisaRender/build/bin"))
     import LuisaRenderPy
 except ImportError as e:
-    gs.raise_exception_from("Failed to import LuisaRenderer.", e)
+    gs.raise_exception_from(f"Failed to import LuisaRenderer.", e)
 
 logging_class = {
     "debug": LuisaRenderPy.LogLevel.DEBUG,
@@ -122,6 +122,7 @@ class MeshLight(ShapeLight):
 
 class Raytracer:
     def __init__(self, options, vis_options):
+        self.device_index = options.device_index
         self.logging_level = options.logging_level
         self.state_limit = options.state_limit
         self.tracing_depth = options.tracing_depth
@@ -154,35 +155,18 @@ class Raytracer:
         # light objects
         self.lights = []
         for light in options.lights:
+            light_intensity = light.get("intensity", 1.0)
             light_surface = gs.surfaces.Emission(
-                color=tuple(x * light.intensity for x in light.color),
+                color=map(lambda x: x * light_intensity, light["color"]),
             )
             light_surface.update_texture()
-            self.lights.append(SphereLight(radius=light.radius, pos=light.pos, surface=light_surface))
-
-        # backend and device selection: aligning with genesis if possible
-        backend = gs.backend.name
-        device_index = options.device_index
-        if device_index is None:
-            # If no device index has been specified, use Torch GPU device ID if any, 0 otherwise
-            device_index = 0 if gs.device.type == "cpu" else (gs.device.index or 0)
-        if backend == "amdgpu":
-            # Luisa does not support HIP for AMD GPU: using DirectX on Windows, falling back to CPU otherwise
-            if sys.platform == "win32":
-                backend = "dx"
-            else:
-                backend = "cpu"
-                device_index = 0
-        elif sys.platform == "darwin":
-            backend = "metal"
-        self.backend = backend
-        self.device_index = device_index
+            self.lights.append(SphereLight(radius=light["radius"], pos=light["pos"], surface=light_surface))
 
         LuisaRenderPy.init(
             context_path=os.path.dirname(LuisaRenderPy.__file__),
             context_id=str(gs.UID()),
-            backend=backend,
-            device_index=device_index,
+            backend="cuda" if gs.platform != "macOS" else "metal",
+            device_index=self.device_index,
             log_level=logging_class[self.logging_level],
         )
 
@@ -247,12 +231,9 @@ class Raytracer:
             light.add_to_render(self)
 
         for entity in self.sim.entities:
-            if isinstance(entity, entities.KinematicEntity):
-                for geom in entity.vgeoms:
+            if isinstance(entity, (entities.RigidEntity, entities.AvatarEntity)):
+                for geom in entity.vgeoms + entity.geoms:
                     self.add_surface(str(geom.uid), geom.surface)
-                if isinstance(entity, entities.RigidEntity):
-                    for geom in entity.geoms:
-                        self.add_surface(str(geom.uid), geom.surface)
             else:
                 self.add_surface(str(entity.uid), entity.surface)
 
@@ -288,12 +269,19 @@ class Raytracer:
                         uvs=np.array([]) if geom.uvs is None else geom.uvs,
                     )
 
-        # kinematic entities
-        if self.sim.kinematic_solver.is_active:
-            for kinematic_entity in self.sim.kinematic_solver.entities:
-                assert kinematic_entity.surface.vis_mode == "visual"
-                for geom in kinematic_entity.vgeoms:
-                    mesh = geom.get_trimesh()
+        # avatar entities
+        if self.sim.avatar_solver.is_active:
+            for avatar_entity in self.sim.avatar_solver.entities:
+                if avatar_entity.surface.vis_mode == "visual":
+                    geoms = avatar_entity.vgeoms
+                else:
+                    geoms = avatar_entity.geoms
+
+                for geom in geoms:
+                    if "sdf" in avatar_entity.surface.vis_mode:
+                        mesh = geom.get_sdf_trimesh()
+                    else:
+                        mesh = geom.get_trimesh()
                     self.add_rigid_batch(
                         name=str(geom.uid),
                         vertices=mesh.vertices,
@@ -334,7 +322,7 @@ class Raytracer:
         if self.sim.fem_solver.is_active:
             for fem_entity in self.sim.fem_solver.entities:
                 if fem_entity.surface.vis_mode == "visual":
-                    self.add_deformable(str(fem_entity.uid))
+                    self.add_deformable(str(fem_entity.id))
 
     def get_transform(self, matrix):
         if matrix is None:
@@ -358,7 +346,7 @@ class Raytracer:
                     image_data=np.ascontiguousarray(image_array).tobytes(),
                     width=image_array.shape[1],
                     height=image_array.shape[0],
-                    channel=texture.channel,
+                    channel=texture.channel(),
                     scale=texture.image_color,
                     encoding=texture.encoding,
                 )
@@ -371,10 +359,10 @@ class Raytracer:
 
     def add_surface(self, shape_name, surface):
         # add emission
-        if surface.emission is not None:
+        if surface.get_emission() is not None:
             emission_luisa = LuisaRenderPy.Light(
                 name=f"emis_{shape_name}",
-                emission=self.get_texture(surface.emission),
+                emission=self.get_texture(surface.get_emission()),
                 two_sided=False if surface.double_sided is None else surface.double_sided,
                 beam_angle=surface.cutoff,
             )
@@ -671,18 +659,29 @@ class Raytracer:
                 T = gu.trans_quat_to_T(pos, quat)
                 self.update_rigid(str(tool_entity.uid), T)
 
-        # rigid-like entities (rigid + kinematic)
-        for solver in (self.sim.rigid_solver, self.sim.kinematic_solver):
-            if not solver.is_active:
-                continue
-
-            for entity in solver.entities:
-                if entity.surface.vis_mode == "visual":
-                    geoms = entity.vgeoms
-                    geoms_T = solver._vgeoms_render_T
+        # rigid entities
+        if self.sim.rigid_solver.is_active:
+            for rigid_entity in self.sim.rigid_solver.entities:
+                if rigid_entity.surface.vis_mode == "visual":
+                    geoms = rigid_entity.vgeoms
+                    geoms_T = self.sim.rigid_solver._vgeoms_render_T
                 else:
-                    geoms = entity.geoms
-                    geoms_T = solver._geoms_render_T
+                    geoms = rigid_entity.geoms
+                    geoms_T = self.sim.rigid_solver._geoms_render_T
+
+                for geom in geoms:
+                    geom_T = geoms_T[geom.idx]  # TODO: support batching
+                    self.update_rigid_batch(str(geom.uid), geom_T)
+
+        # avatar entities
+        if self.sim.avatar_solver.is_active:
+            for avatar_entity in self.sim.avatar_solver.entities:
+                if avatar_entity.surface.vis_mode == "visual":
+                    geoms = avatar_entity.vgeoms
+                    geoms_T = self.sim.avatar_solver._vgeoms_render_T
+                else:
+                    geoms = avatar_entity.geoms
+                    geoms_T = self.sim.avatar_solver._geoms_render_T
 
                 for geom in geoms:
                     geom_T = geoms_T[geom.idx]  # TODO: support batching
@@ -781,10 +780,9 @@ class Raytracer:
 
         # FEM entities
         if self.sim.fem_solver.is_active:
-            vertices_all, triangles_all, uvs_qd = self.sim.fem_solver.get_state_render(self.sim.cur_substep_local)
+            vertices_all, triangles_all = self.sim.fem_solver.get_state_render(self.sim.cur_substep_local)
             vertices_all = vertices_all.to_numpy()[:, self.rendered_envs_idx[0]]
-            triangles_all = triangles_all.to_numpy().reshape((-1, 3))
-            uvs_all = uvs_qd.to_numpy()
+            triangles_all = triangles_all.to_numpy()
 
             for fem_entity in self.sim.fem_solver.entities:
                 if fem_entity.surface.vis_mode == "visual":
@@ -793,15 +791,13 @@ class Raytracer:
                         triangles_all[fem_entity.s_start : (fem_entity.s_start + fem_entity.n_surfaces)]
                         - fem_entity.v_start
                     )
-                    vertex_normals = trimesh.Trimesh(vertices=vertices, faces=triangles, process=False).vertex_normals
-                    uvs = uvs_all[fem_entity.v_start : fem_entity.v_start + fem_entity.n_vertices]
 
                     self.update_deformable(
                         str(fem_entity.uid),
                         vertices,
                         triangles,
-                        vertex_normals,
-                        uvs,
+                        trimesh.Trimesh(vertices=vertices, faces=triangles, process=False).vertex_normals,
+                        np.array([]),
                     )
 
         # Flush the update buffer.

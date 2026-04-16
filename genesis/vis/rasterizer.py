@@ -8,7 +8,6 @@ import OpenGL
 import genesis as gs
 from genesis.repr_base import RBC
 from genesis.ext import pyrender
-from genesis.vis.camera import Camera
 
 
 class Rasterizer(RBC):
@@ -28,7 +27,7 @@ class Rasterizer(RBC):
         if self._offscreen:
             # Select PyOpenGL backend for `pyrender.OffscreenRenderer`.
             # If env variable is set, use specified platform if supported, otherwise some platform-specific default.
-            platform = os.environ.get("PYOPENGL_PLATFORM", "egl" if sys.platform == "linux" else "pyglet")
+            platform = os.environ.get("PYOPENGL_PLATFORM", "egl" if gs.platform == "Linux" else "pyglet")
             if platform not in ("osmesa", "pyglet", "egl"):
                 gs.logger.warning(f"PYOPENGL_PLATFORM='{platform}' not supported. Falling back to 'pyglet'.")
                 platform = "pyglet"
@@ -60,7 +59,7 @@ class Rasterizer(RBC):
         self._context.update_camera_frustum(camera)
 
     def remove_camera(self, camera):
-        self._context.remove_node(self._camera_nodes[camera.uid])
+        self._context.removenode(self._camera_nodes[camera.uid])
         del self._camera_nodes[camera.uid]
         if self._offscreen:
             self._camera_targets[camera.uid].delete()
@@ -69,11 +68,7 @@ class Rasterizer(RBC):
         del self._camera_targets[camera.uid]
 
     def render_camera(self, camera, rgb=True, depth=False, segmentation=False, normal=False):
-        # Update camera
-        self.update_camera(camera)
-
         rgb_arr, depth_arr, seg_idxc_arr, normal_arr = None, None, None, None
-        skip_markers = not camera.debug if isinstance(camera, Camera) else True
         if self._offscreen:
             # Set the context
             self._renderer.make_current()
@@ -81,6 +76,8 @@ class Rasterizer(RBC):
             # Update the context if not already done before
             self._context.jit.update_buffer(self._context.buffer)
             self._context.buffer.clear()
+
+            # Render
             try:
                 if rgb or depth or normal:
                     retval = self._renderer.render(
@@ -94,7 +91,6 @@ class Rasterizer(RBC):
                         depth=depth,
                         plane_reflection=rgb and self._context.plane_reflection,
                         shadow=rgb and self._context.shadow,
-                        skip_markers=skip_markers,
                     )
 
                 if segmentation:
@@ -109,7 +105,6 @@ class Rasterizer(RBC):
                         depth=False,
                         plane_reflection=False,
                         shadow=False,
-                        skip_markers=skip_markers,
                     )
             finally:
                 # Unset the context
@@ -124,7 +119,6 @@ class Rasterizer(RBC):
                     depth=depth,
                     normal=normal,
                     seg=False,
-                    skip_markers=skip_markers,
                 )
 
             if segmentation:
@@ -135,7 +129,6 @@ class Rasterizer(RBC):
                     depth=False,
                     normal=False,
                     seg=True,
-                    skip_markers=skip_markers,
                 )
 
         if segmentation:
@@ -162,7 +155,7 @@ class Rasterizer(RBC):
                     camera_target.delete()
                 elif self._viewer is not None:
                     self._viewer.close_offscreen(camera_target)
-            except (OpenGL.error.NullFunctionError, OSError):
+            except OSError:
                 pass
         self._camera_targets.clear()
 
@@ -170,7 +163,7 @@ class Rasterizer(RBC):
             try:
                 self._renderer.make_current()
                 self._renderer.delete()
-            except (OpenGL.error.GLError, OpenGL.error.NullFunctionError, ImportError):
+            except (OpenGL.error.GLError, ImportError):
                 pass
             del self._renderer
             self._renderer = None

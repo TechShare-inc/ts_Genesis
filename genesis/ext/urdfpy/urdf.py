@@ -1,4 +1,5 @@
 import copy
+import io
 import os
 import time
 import xml.etree.ElementTree as ET
@@ -9,8 +10,15 @@ import networkx as nx
 import numpy as np
 import PIL
 import trimesh
+from scipy.spatial.transform import Rotation
 
-from .utils import configure_origin, get_filename, load_meshes, parse_origin, unparse_origin
+from .utils import (
+    configure_origin,
+    get_filename,
+    load_meshes,
+    parse_origin,
+    unparse_origin,
+)
 
 
 class URDFType(object):
@@ -89,7 +97,7 @@ class URDFType(object):
                     v = cls._parse_attrib(t, node.attrib[a])
                 except Exception:
                     raise ValueError(
-                        "Missing required attribute {} when parsing an object of type {}".format(a, cls.__name__)
+                        "Missing required attribute {} when parsing an object " "of type {}".format(a, cls.__name__)
                     )
             else:
                 v = None
@@ -132,9 +140,8 @@ class URDFType(object):
                 vs = node.findall(t._TAG)
                 if len(vs) == 0 and r:
                     raise ValueError(
-                        "Missing required subelement(s) of type {} when parsing an object of type {}".format(
-                            t.__name__, cls.__name__
-                        )
+                        "Missing required subelement(s) of type {} when "
+                        "parsing an object of type {}".format(t.__name__, cls.__name__)
                     )
                 v = [t._from_xml(n, node, path) for n in vs]
             kwargs[a] = v
@@ -642,7 +649,7 @@ class Mesh(URDFType):
                 raise ValueError("Mesh must have at least one trimesh.Trimesh")
             for m in value:
                 if not isinstance(m, trimesh.Trimesh):
-                    raise TypeError("Mesh requires a trimesh.Trimesh or a list of them")
+                    raise TypeError("Mesh requires a trimesh.Trimesh or a " "list of them")
         elif isinstance(value, trimesh.Trimesh):
             value = [value]
         else:
@@ -672,8 +679,8 @@ class Mesh(URDFType):
         return Mesh(**kwargs)
 
     def _to_xml(self, parent, path):
-        # Make sure that parent directory exists
-        get_filename(path, self.filename, makedirs=True)
+        # Get the filename
+        fn = get_filename(path, self.filename, makedirs=True)
 
         # Export the meshes as a single file
         # meshes = self.meshes
@@ -902,7 +909,7 @@ class Texture(URDFType):
         if isinstance(value, np.ndarray):
             value = PIL.Image.fromarray(value)
         elif not isinstance(value, PIL.Image.Image):
-            raise ValueError("Texture only supports numpy arrays or PIL images")
+            raise ValueError("Texture only supports numpy arrays " "or PIL images")
         self._image = value
 
     @classmethod
@@ -998,7 +1005,7 @@ class Material(URDFType):
                 image = PIL.Image.open(value)
                 value = Texture(filename=value, image=image)
             elif not isinstance(value, Texture):
-                raise ValueError("Invalid type for texture -- expect path to image or Texture")
+                raise ValueError("Invalid type for texture -- expect path to " "image or Texture")
         self._texture = value
 
     @classmethod
@@ -1100,12 +1107,12 @@ class Collision(URDFType):
 
     @origin.setter
     def origin(self, value):
-        self._origin = configure_origin(value, default=True)
+        self._origin = configure_origin(value)
 
     @classmethod
     def _from_xml(cls, node, root, path):
         kwargs = cls._parse(node, root, path)
-        kwargs["origin"] = parse_origin(node, default=True)
+        kwargs["origin"] = parse_origin(node)
         return Collision(**kwargs)
 
     def _to_xml(self, parent, path):
@@ -1196,7 +1203,7 @@ class Visual(URDFType):
 
     @origin.setter
     def origin(self, value):
-        self._origin = configure_origin(value, default=True)
+        self._origin = configure_origin(value)
 
     @property
     def material(self):
@@ -1213,7 +1220,7 @@ class Visual(URDFType):
     @classmethod
     def _from_xml(cls, node, root, path):
         kwargs = cls._parse(node, root, path)
-        kwargs["origin"] = parse_origin(node, default=True)
+        kwargs["origin"] = parse_origin(node)
         return Visual(**kwargs)
 
     def _to_xml(self, parent, path):
@@ -1257,7 +1264,7 @@ class Inertial(URDFType):
     inertia : (3,3) float
         The 3x3 symmetric rotational inertia matrix.
     origin : (4,4) float, optional
-        The pose of the inertial relative to the link frame.
+        The pose of the inertials relative to the link frame.
         Defaults to identity if not specified.
     """
 
@@ -1275,7 +1282,7 @@ class Inertial(URDFType):
 
     @mass.setter
     def mass(self, value):
-        self._mass = float(value) if value is not None else None
+        self._mass = float(value)
 
     @property
     def inertia(self):
@@ -1296,12 +1303,12 @@ class Inertial(URDFType):
 
     @origin.setter
     def origin(self, value):
-        self._origin = configure_origin(value, default=False)
+        self._origin = configure_origin(value)
 
     @classmethod
     def _from_xml(cls, node, root, path):
-        origin = parse_origin(node, default=False)
-        mass = float(n.attrib["value"]) if (n := node.find("mass")) is not None else None
+        origin = parse_origin(node)
+        mass = float(node.find("mass").attrib["value"])
         n = node.find("inertia")
         xx = float(n.attrib["ixx"])
         xy = float(n.attrib["ixy"])
@@ -1314,12 +1321,10 @@ class Inertial(URDFType):
 
     def _to_xml(self, parent, path):
         node = ET.Element("inertial")
-        if self.origin is not None:
-            node.append(unparse_origin(self.origin))
-        if self.mass is not None:
-            mass = ET.Element("mass")
-            mass.attrib["value"] = str(self.mass)
-            node.append(mass)
+        node.append(unparse_origin(self.origin))
+        mass = ET.Element("mass")
+        mass.attrib["value"] = str(self.mass)
+        node.append(mass)
         inertia = ET.Element("inertia")
         inertia.attrib["ixx"] = str(self.inertia[0, 0])
         inertia.attrib["ixy"] = str(self.inertia[0, 1])
@@ -2228,7 +2233,7 @@ class Joint(URDFType):
 
     @origin.setter
     def origin(self, value):
-        self._origin = configure_origin(value, default=True)
+        self._origin = configure_origin(value)
 
     @property
     def limit(self):
@@ -2239,7 +2244,7 @@ class Joint(URDFType):
     def limit(self, value):
         if value is None:
             if self.joint_type in ["prismatic", "revolute"]:
-                raise ValueError("Require joint limit for prismatic and revolute joints")
+                raise ValueError("Require joint limit for prismatic and " "revolute joints")
         elif not isinstance(value, JointLimit):
             raise TypeError("Expected JointLimit type")
         self._limit = value
@@ -2438,7 +2443,7 @@ class Joint(URDFType):
         if axis is not None:
             axis = np.fromstring(axis.attrib["xyz"], sep=" ")
         kwargs["axis"] = axis
-        kwargs["origin"] = parse_origin(node, default=True)
+        kwargs["origin"] = parse_origin(node)
         return Joint(**kwargs)
 
     def _to_xml(self, parent, path):
@@ -2660,15 +2665,11 @@ class Link(URDFType):
                     scale = np.repeat(scale, 3)
                 sm[:3, :3] = np.diag(scale)
                 cm = self.collision_mesh.copy()
-                volume_orig = cm.volume
+                cm.density = self.inertial.mass / cm.volume
                 cm.apply_transform(sm)
-                volume_scaled = cm.volume
                 cmm = np.eye(4)
                 cmm[:3, 3] = cm.center_mass
-                mass = None
-                if self.inertial.mass is not None:
-                    mass = self.inertial.mass * (volume_scaled / volume_orig)
-                inertial = Inertial(mass=mass, inertia=cm.moment_inertia, origin=cmm)
+                inertial = Inertial(mass=cm.mass, inertia=cm.moment_inertia, origin=cmm)
 
         visuals = None
         if not collision_only:
@@ -2748,17 +2749,17 @@ class URDF(URDFType):
 
         for x in self._joints:
             if x.name in self._joint_map:
-                raise ValueError("Two joints with name {} found".format(x.name))
+                raise ValueError("Two joints with name {} " "found".format(x.name))
             self._joint_map[x.name] = x
 
         for x in self._transmissions:
             if x.name in self._transmission_map:
-                raise ValueError("Two transmissions with name {} found".format(x.name))
+                raise ValueError("Two transmissions with name {} " "found".format(x.name))
             self._transmission_map[x.name] = x
 
         for x in self._materials:
             if x.name in self._material_map:
-                raise ValueError("Two materials with name {} found".format(x.name))
+                raise ValueError("Two materials with name {} " "found".format(x.name))
             self._material_map[x.name] = x
 
         # Synchronize materials between links and top-level set
@@ -3815,7 +3816,7 @@ class URDF(URDFType):
         for t in self.transmissions:
             for joint in t.joints:
                 if joint.name not in self._joint_map:
-                    raise ValueError("Transmission {} has invalid joint name {}".format(t.name, joint.name))
+                    raise ValueError("Transmission {} has invalid joint name " "{}".format(t.name, joint.name))
 
     def _validate_graph(self):
         """Raise an exception if the link-joint structure is invalid.
@@ -3842,7 +3843,7 @@ class URDF(URDFType):
                 for n in cc:
                     cluster.append(n.name)
                 link_clusters.append(cluster)
-            message = "Links are not all connected. Connected components are:"
+            message = "Links are not all connected. " "Connected components are:"
             for lc in link_clusters:
                 message += "\n\t"
                 for n in lc:
@@ -3881,7 +3882,7 @@ class URDF(URDFType):
                     joint_cfg[joint] = cfg[joint]
         elif isinstance(cfg, (list, tuple, np.ndarray)):
             if len(cfg) != len(self.actuated_joints):
-                raise ValueError("Cfg must have same length as actuated joints if specified as a numerical array")
+                raise ValueError("Cfg must have same length as actuated joints " "if specified as a numerical array")
             for joint, value in zip(self.actuated_joints, cfg):
                 joint_cfg[joint] = value
         else:
@@ -4024,8 +4025,12 @@ class URDF(URDFType):
                 for grandchild_node in G.successors(child_node):
                     joint_edge_vec1 = norm_vec(G_pos[parent_node] - G_pos[child_node])
                     joint_edge_vec2 = norm_vec(G_pos[grandchild_node] - G_pos[child_node])
-                    joint_axis = np.cross(joint_edge_vec1, joint_edge_vec2)
-                    joint_axis /= np.linalg.norm(joint_axis)
+                    joint_rotmat = rotation_matrix_from_vectors(
+                        joint_edge_vec1, joint_edge_vec2
+                    )  # broken down into joint axis and initial pose
+                    joint_rotvec = Rotation.from_matrix(joint_rotmat).as_rotvec()
+                    joint_init_ang = np.linalg.norm(joint_rotvec)
+                    joint_axis = joint_rotvec / joint_init_ang  # the same as np.cross(joint_edge_vec2, joint_edge_vec1)
                     joint_origin_rotmat = np.eye(3)
                     joint_origin = xyz_rotmat_to_matrix(joint_xyz, joint_origin_rotmat)
                     joint = Joint(

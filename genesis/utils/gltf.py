@@ -220,7 +220,7 @@ def parse_glb_material(glb, material_index, surface):
             emissive_factor = np.array(material.emissiveFactor, dtype=np.float32)
 
         emissive_texture = mu.create_texture(emissive_image, emissive_factor, "srgb")
-        if emissive_texture.is_black:  # Make sure to check emissive
+        if emissive_texture.is_black():  # Make sure to check emissive
             emissive_texture = None
 
     # TODO: Parse them!
@@ -243,7 +243,7 @@ def parse_glb_material(glb, material_index, surface):
             # https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_materials_ior/README.md
             ior = extension_material.get("ior", 1.5)
 
-    material_surface = surface.model_copy()
+    material_surface = surface.copy()
     material_surface.update_texture(
         color_texture=color_texture,
         opacity_texture=opacity_texture,
@@ -291,7 +291,7 @@ def parse_glb_tree(glb, node_index):
     return mesh_list
 
 
-def parse_mesh_glb(path, group_by_material, scale, is_mesh_zup, surface):
+def parse_mesh_glb(path, group_by_material, scale, surface):
     glb = pygltflib.GLTF2().load(path)
     assert glb is not None
     glb.convert_images(pygltflib.ImageFormat.DATAURI)
@@ -306,7 +306,6 @@ def parse_mesh_glb(path, group_by_material, scale, is_mesh_zup, surface):
 
     mesh_infos = mu.MeshInfoGroup()
     materials = {}
-    is_visual_overwritten = surface.texture is not None
 
     for i, (mesh_index, mesh_transform) in enumerate(mesh_list):
         mesh_glb = glb.meshes[mesh_index]
@@ -320,7 +319,7 @@ def parse_mesh_glb(path, group_by_material, scale, is_mesh_zup, surface):
                         primitive.material, parse_glb_material(glb, primitive.material, surface)
                     )
             else:
-                material, uv_used, material_name = surface.model_copy(), 0, ""
+                material, uv_used, material_name = surface.copy(), 0, ""
 
             uvs = None
             if "KHR_draco_mesh_compression" in primitive.extensions:
@@ -393,11 +392,8 @@ def parse_mesh_glb(path, group_by_material, scale, is_mesh_zup, surface):
             mesh_info, first_created = mesh_infos.get(group_idx)
             if first_created:
                 mesh_info.set_property(
-                    surface=material,
-                    metadata={"mesh_path": path, "name": material_name if group_by_material else mesh_name},
+                    surface=material, metadata={"path": path, "name": material_name if group_by_material else mesh_name}
                 )
             mesh_info.append(points, triangles, normals, uvs)
-    meshes = mesh_infos.export_meshes(scale=scale, is_mesh_zup=is_mesh_zup)
-    for mesh in meshes:
-        mesh.metadata["is_visual_overwritten"] = is_visual_overwritten
-    return meshes
+
+    return mesh_infos.export_meshes(scale=scale)

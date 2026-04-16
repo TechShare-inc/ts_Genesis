@@ -1,6 +1,5 @@
 from typing import TYPE_CHECKING
-
-import quadrants as qd
+import gstaichi as ti
 
 from genesis.engine.boundaries import FloorBoundary
 from genesis.engine.states.solvers import ToolSolverState
@@ -9,11 +8,8 @@ from genesis.utils.misc import *
 
 from .base_solver import Solver
 
-if TYPE_CHECKING:
-    from genesis.engine.entities import ToolEntity
 
-
-@qd.data_oriented
+@ti.data_oriented
 class ToolSolver(Solver):
     """
     Note
@@ -46,7 +42,7 @@ class ToolSolver(Solver):
     def setup_boundary(self):
         self.boundary = FloorBoundary(height=self.floor_height)
 
-    def add_entity(self, idx, material, morph, surface, name: str | None = None) -> "ToolEntity":
+    def add_entity(self, idx, material, morph, surface):
         entity = ToolEntity(
             scene=self._scene,
             idx=idx,
@@ -54,7 +50,6 @@ class ToolSolver(Solver):
             material=material,
             morph=morph,
             surface=surface,
-            name=name,
         )
         self._entities.append(entity)
         return entity
@@ -122,8 +117,8 @@ class ToolSolver(Solver):
         for entity in self._entities:
             entity.load_ckpt(ckpt_name=ckpt_name)
 
-    @qd.func
+    @ti.func
     def pbd_collide(self, f, pos_world, thickness, dt):
-        for entity in qd.static(self._entities):
+        for entity in ti.static(self._entities):
             pos_world = entity.pbd_collide(f, pos_world, thickness, dt)
         return pos_world

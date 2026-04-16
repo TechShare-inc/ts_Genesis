@@ -8,6 +8,7 @@ import genesis as gs
 
 
 def main():
+
     parser = argparse.ArgumentParser()
     parser.add_argument("-v", "--vis", action="store_true", default=False)
     args = parser.parse_args()
@@ -47,7 +48,7 @@ def main():
 def run(gpu_id, func):
     # Set environment args
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-    os.environ["QD_VISIBLE_DEVICE"] = str(gpu_id)
+    os.environ["TI_VISIBLE_DEVICE"] = str(gpu_id)
     os.environ["EGL_DEVICE_ID"] = str(gpu_id)
     # main script
     func()

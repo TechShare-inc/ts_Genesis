@@ -5,11 +5,10 @@
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
 
+
 import numpy as np
-
+from scipy import interpolate
 import genesis as gs
-import genesis.utils.geom as gu
-
 
 def fractal_terrain(terrain, levels=8, scale=1.0):
     """
@@ -17,7 +16,7 @@ def fractal_terrain(terrain, levels=8, scale=1.0):
 
     Parameters
         terrain (SubTerrain): the terrain
-        levels (int, optional): granularity of the fractal terrain. Defaults to 8.
+        levels (int, optional): granurarity of the fractal terrain. Defaults to 8.
         scale (float, optional): scales vertical variation. Defaults to 1.0.
     """
     width = terrain.width
@@ -80,11 +79,11 @@ def random_uniform_terrain(
     x = np.linspace(0, scaled_width, height_field_downsampled.shape[0])
     y = np.linspace(0, scaled_length, height_field_downsampled.shape[1])
 
+    f = interpolate.RectBivariateSpline(x, y, height_field_downsampled)
+
     x_upsampled = np.linspace(0, scaled_width, terrain.width)
     y_upsampled = np.linspace(0, scaled_length, terrain.length)
-    z_upsampled = np.rint(
-        gu.cubic_spline_1d(x, gu.cubic_spline_1d(y, height_field_downsampled.T, y_upsampled).T, x_upsampled)
-    )
+    z_upsampled = np.rint(f(x_upsampled, y_upsampled))
 
     terrain.height_field_raw += z_upsampled
     return terrain
@@ -262,6 +261,7 @@ def pyramid_stairs_terrain(terrain, step_width, step_height, platform_size=1.0):
         terrain.height_field_raw[start_x:stop_x, start_y:stop_y] = height
     return terrain
 
+
 def pyramid_stairs_terrain_(terrain, step_width, center_width, step_height):
     """
     Generate stairs
@@ -320,6 +320,7 @@ def pyramid_stairs_terrain_(terrain, step_width, center_width, step_height):
         # print("stop_y: ", stop_y)
         
     return terrain
+
 
 def stepping_stones_terrain(terrain, stone_size, stone_distance, max_height, platform_size=1.0, depth=-10):
     """
@@ -410,6 +411,7 @@ def convert_heightfield_to_trimesh(height_field_raw, horizontal_scale, vertical_
     yy, xx = np.meshgrid(y, x)
 
     if slope_threshold is not None:
+
         slope_threshold *= horizontal_scale / vertical_scale
         move_x = np.zeros((num_rows, num_cols))
         move_y = np.zeros((num_rows, num_cols))

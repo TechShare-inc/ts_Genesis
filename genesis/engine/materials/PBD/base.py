@@ -1,7 +1,11 @@
-from ..base import EntityT, Material
+import numpy as np
+import gstaichi as ti
+
+from ..base import Material
 
 
-class Base(Material[EntityT]):
+@ti.data_oriented
+class Base(Material):
     """
     The base class of PBD materials.
 
@@ -9,3 +13,6 @@ class Base(Material[EntityT]):
     ----
     This class should *not* be instantiated directly.
     """
+
+    def __init__(self):
+        super().__init__()

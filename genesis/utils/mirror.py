@@ -5,6 +5,14 @@ def mirror_changed_minus_values(values):
     values_mirrored = -values
     return values_mirrored
 
+def mirror_terrain_y(terrain):
+    terrain_mirrored = terrain.clone()
+    y_size = 11
+    x_size = terrain.shape[1]//y_size
+    for i in range(y_size):
+        terrain_mirrored[..., x_size*i:x_size*(i+1)] = terrain_mirrored[..., x_size*i:x_size*(i+1)][:, ::-1]
+    return terrain_mirrored
+
 def mirror_linear(linear):
     linear_mirrored = linear.clone()
     linear_mirrored[..., 1] *= -1 # y

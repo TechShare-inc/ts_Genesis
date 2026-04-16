@@ -1,19 +1,22 @@
 import hashlib
+import json
 import marshal
 import math
 import os
 import pickle as pkl
+import platform
+from itertools import chain
 from functools import lru_cache
 from pathlib import Path
 
-import coacd
-import igl
-import Imath
 import numpy as np
-import OpenEXR
-import tetgen
 import trimesh
 from PIL import Image
+import OpenEXR
+import Imath
+
+import coacd
+import igl
 
 import genesis as gs
 
@@ -22,13 +25,13 @@ from .misc import (
     get_assets_dir,
     get_cvx_cache_dir,
     get_exr_cache_dir,
-    get_gnd_cache_dir,
     get_gsd_cache_dir,
+    get_gnd_cache_dir,
     get_ptc_cache_dir,
     get_remesh_cache_dir,
     get_src_dir,
-    get_tet_cache_dir,
     get_usd_cache_dir,
+    get_tet_cache_dir,
 )
 
 MESH_REPAIR_ERROR_THRESHOLD = 0.01
@@ -36,19 +39,6 @@ CVX_PATH_QUANTIZE_FACTOR = 1e-6
 Y_UP_TRANSFORM = np.asarray(  # translation on the bottom row
     [[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, -1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]], dtype=np.float32
 )
-DEFAULT_PLANE_TEXTURE_PATH = "textures/checker.png"  # use checkerboard texture by default
-
-
-def color_f32_to_u8(color) -> np.ndarray:
-    return np.round(np.asarray(color, dtype=np.float32) * 255.0).astype(np.uint8)
-
-
-def color_u8_to_f32(color) -> np.ndarray:
-    return np.asarray(color, dtype=np.uint8).astype(np.float32) / 255.0
-
-
-def glossiness_to_roughness(glossiness: float) -> float:
-    return (2 / (glossiness + 2)) ** (1.0 / 4.0)
 
 
 class MeshInfo:
@@ -73,35 +63,36 @@ class MeshInfo:
         self.uvs.append(uvs)
         self.n_points += len(verts)
 
-    def export_mesh(self, scale: float, is_mesh_zup: bool) -> "gs.Mesh":
-        uvs = None
+    def export_mesh(self, scale):
         if self.uvs:
             for i, (uvs, verts) in enumerate(zip(self.uvs, self.verts)):
                 if uvs is None:
                     self.uvs[i] = np.zeros((len(verts), 2), dtype=gs.np_float)
             uvs = np.concatenate(self.uvs, axis=0)
+        else:
+            uvs = None
 
         verts = np.concatenate(self.verts, axis=0)
         faces = np.concatenate(self.faces, axis=0)
         normals = np.concatenate(self.normals, axis=0)
 
-        return gs.Mesh.from_attrs(
+        mesh = gs.Mesh.from_attrs(
             verts=verts,
             faces=faces,
             normals=normals,
             surface=self.surface,
             uvs=uvs,
             scale=scale,
-            metadata=self.metadata,
-            is_mesh_zup=is_mesh_zup,
         )
+        mesh.metadata.update(self.metadata)
+        return mesh
 
 
 class MeshInfoGroup:
     def __init__(self):
-        self.infos: dict[str, MeshInfo] = {}
+        self.infos = dict()
 
-    def get(self, name: str):
+    def get(self, name):
         first_created = False
         mesh_info = self.infos.get(name)
         if mesh_info is None:
@@ -109,8 +100,8 @@ class MeshInfoGroup:
             first_created = True
         return mesh_info, first_created
 
-    def export_meshes(self, scale, is_mesh_zup) -> "list[gs.Mesh]":
-        return [mesh_info.export_mesh(scale, is_mesh_zup) for mesh_info in self.infos.values()]
+    def export_meshes(self, scale):
+        return [mesh_info.export_mesh(scale) for mesh_info in self.infos.values()]
 
 
 def get_asset_path(file):
@@ -181,12 +172,7 @@ def get_hashkey(*args):
 
 def load_mesh(file):
     if isinstance(file, (str, Path)):
-        try:
-            return trimesh.load_mesh(file, force="mesh", skip_texture=False)
-        except Exception as e:
-            gs.logger.warning(f"Failed to load mesh with texture: {e}")
-            # try loading without texture data
-            return trimesh.load_mesh(file, force="mesh", skip_texture=True)
+        return trimesh.load(file, force="mesh", skip_texture=True)
     return file
 
 
@@ -231,12 +217,11 @@ def surface_uvs_to_trimesh_visual(surface, uvs=None, n_verts=None):
             )
         else:
             # fall back to color texture
-            visual = trimesh.visual.ColorVisuals(vertex_colors=np.tile(texture.mean_color, [n_verts, 1]))
+            visual = trimesh.visual.ColorVisuals(vertex_colors=np.tile(texture.mean_color(), [n_verts, 1]))
     elif isinstance(texture, gs.textures.ColorTexture):
         if n_verts is None:
             gs.raise_exception("n_verts is required for color texture.")
         visual = trimesh.visual.ColorVisuals(vertex_colors=np.tile(np.array(texture.color), [n_verts, 1]))
-        assert visual.defined
     else:
         gs.raise_exception("Cannot get texture when generating trimesh visual.")
 
@@ -272,7 +257,7 @@ def convex_decompose(mesh, coacd_options):
             else:
                 # if cached mesh scale is invalid, ignore cache
                 is_cached_loaded = False
-        except (EOFError, ModuleNotFoundError, pkl.UnpicklingError, TypeError, MemoryError):
+        except (EOFError, ModuleNotFoundError, pkl.UnpicklingError, TypeError):
             gs.logger.info("Ignoring corrupted cache.")
 
     if not is_cached_loaded:
@@ -331,8 +316,6 @@ def postprocess_collision_geoms(
         if tmesh.is_winding_consistent and not tmesh.is_watertight:
             tmesh_repaired = tmesh.copy()
             tmesh_repaired.update_faces(tmesh_repaired.unique_faces())
-            if tmesh_repaired.volume < 0.0:
-                tmesh_repaired.invert()
             if abs(tmesh_repaired.volume) < gs.EPS:
                 continue
             if abs(abs(tmesh.volume / tmesh_repaired.volume) - 1.0) > MESH_REPAIR_ERROR_THRESHOLD:
@@ -347,7 +330,7 @@ def postprocess_collision_geoms(
     # Check if all the geometries can be convexified without decomposition
     must_decompose = False
     if convexify:
-        for i_g, g_info in enumerate(g_infos):
+        for g_info in g_infos:
             mesh = g_info["mesh"]
             tmesh = mesh.trimesh
 
@@ -363,35 +346,20 @@ def postprocess_collision_geoms(
                 tmesh = tmesh.copy()
                 tmesh.process(validate=True)
 
-            # Fix negative volume by inverting faces
-            if tmesh.volume < 0.0:
-                tmesh = tmesh.copy()
-                tmesh.invert()
-
             # Compute volume approximation error between true geometry and its convex hull conservatively
             if not tmesh.is_winding_consistent:
                 volume_err = float("inf")
                 must_decompose = not math.isinf(decompose_error_threshold)
-                if not must_decompose and len(g_infos) > 1:
-                    gs.logger.warning(
-                        f"Winding not consistent for submesh '{mesh.metadata.get('name', i_g)}'. Forcing convex "
-                        "decomposition..."
-                    )
-            elif abs(tmesh.volume) > gs.EPS:
-                volume_err = abs(cmesh.volume / abs(tmesh.volume) - 1.0)
+            elif tmesh.volume > gs.EPS:
+                volume_err = cmesh.volume / abs(tmesh.volume) - 1.0
                 if volume_err > decompose_error_threshold:
                     must_decompose = True
-                    if not must_decompose and len(g_infos) > 1:
-                        gs.logger.warning(
-                            f"Convex hull of submesh '{mesh.metadata.get('name') or i_g}' is not accurate enough for "
-                            f"collision detection ({volume_err:.3f}). Forcing convex decomposition..."
-                        )
 
     # Check whether merging the geometries is possible, i.e.
     # * They are all meshes
     # * They belong to the same collision group (same contype and conaffinity)
     # * Their physical properties are the same (friction coef and contact solver parameters)
-    if (must_decompose or not convexify) and len(g_infos) > 1:
+    if must_decompose and len(g_infos) > 1:
         is_merged = all(g_info["type"] == gs.GEOM_TYPE.MESH for g_info in g_infos)
         for name in ("contype", "conaffinity", "friction", "sol_params"):
             if not is_merged:
@@ -401,39 +369,22 @@ def postprocess_collision_geoms(
             if not (np.isnan(diffs).all(axis=0) | (np.abs(diffs) < gs.EPS).all(axis=0)).all():
                 is_merged = False
 
-        # Merge geometry into a single mesh, always preserving the first geom's local pose.
-        # Each submesh's vertices are expressed relative to the first geom's frame, so the
-        # merged geom inherits the first geom's pos/quat unchanged.
+        # Must apply geometry transform before merge concatenation
         if is_merged:
-            first_g_info = g_infos[0]
             tmeshes = []
-            metadata = set(first_g_info["mesh"].metadata.items())
-            T_first_inv = np.linalg.inv(
-                gs.utils.geom.trans_quat_to_T(
-                    first_g_info.get("pos", gu.zero_pos()),
-                    first_g_info.get("quat", gu.identity_quat()),
-                )
-            )
             for g_info in g_infos:
                 mesh = g_info["mesh"]
-                tmesh = mesh.trimesh
-                T_rel = T_first_inv @ gs.utils.geom.trans_quat_to_T(
-                    g_info.get("pos", gu.zero_pos()),
-                    g_info.get("quat", gu.identity_quat()),
-                )
-                if not np.allclose(T_rel, np.eye(4)):
-                    tmesh = tmesh.copy()
-                    tmesh.apply_transform(T_rel)
-                metadata &= set(mesh.metadata.items())
+                tmesh = mesh.trimesh.copy()
+                pos = g_info.get("pos", gu.zero_pos())
+                quat = g_info.get("quat", gu.identity_quat())
+                tmesh.apply_transform(gs.utils.geom.trans_quat_to_T(pos, quat))
                 tmeshes.append(tmesh)
-
             tmesh = trimesh.util.concatenate(tmeshes)
-            metadata = dict(metadata) | {"merged": True}
-            mesh = gs.Mesh.from_trimesh(mesh=tmesh, surface=gs.surfaces.Collision(), metadata=metadata)
-            g_infos = [{**first_g_info, **dict(mesh=mesh)}]
+            mesh = gs.Mesh.from_trimesh(mesh=tmesh, surface=gs.surfaces.Collision(), metadata={"merged": True})
+            g_infos = [{**g_infos[0], **dict(mesh=mesh, pos=gu.zero_pos(), quat=gu.identity_quat())}]
 
         # Try again to convexify then apply convex decomposition if not possible
-        if must_decompose and is_merged:
+        if is_merged:
             return postprocess_collision_geoms(
                 g_infos,
                 decimate,
@@ -467,7 +418,7 @@ def postprocess_collision_geoms(
                 volume_err = 0.0
             else:
                 cmesh = trimesh.convex.convex_hull(tmesh)
-                volume_err = abs(cmesh.volume / abs(tmesh.volume) - 1.0)
+                volume_err = cmesh.volume / abs(tmesh.volume) - 1.0
             if volume_err > decompose_error_threshold:  # Note that 'inf' is not larger than 'inf'
                 tmeshes = convex_decompose(tmesh, coacd_options)
                 meshes = [
@@ -518,20 +469,18 @@ def postprocess_collision_geoms(
     return _g_infos
 
 
-def parse_mesh_trimesh(path, group_by_material, scale, is_mesh_zup, surface) -> "list[gs.Mesh]":
-    meshes: list[gs.Mesh] = []
+def parse_mesh_trimesh(path, group_by_material, scale, surface):
+    meshes = []
     scene = trimesh.load(path, force="scene", group_material=group_by_material, process=False)
     for tmesh in scene.geometry.values():
         if not isinstance(tmesh, trimesh.Trimesh):
             gs.raise_exception(f"Mesh type not supported: {path}")
-        mesh = gs.Mesh.from_trimesh(
-            mesh=tmesh, scale=scale, surface=surface, is_mesh_zup=is_mesh_zup, metadata={"mesh_path": path}
-        )
+        mesh = gs.Mesh.from_trimesh(mesh=tmesh, scale=scale, surface=surface, metadata={"mesh_path": path})
         meshes.append(mesh)
     return meshes
 
 
-def trimesh_to_mesh(mesh, scale, surface) -> "gs.Mesh":
+def trimesh_to_mesh(mesh, scale, surface):
     return gs.Mesh.from_trimesh(mesh=mesh, scale=scale, surface=surface)
 
 
@@ -617,10 +566,7 @@ def create_frame(
 
 def create_camera_frustum(camera, color):
     # camera
-    camera_mesh = trimesh.load(os.path.join(get_src_dir(), "assets", "meshes", "camera/camera.glb"), force="mesh")
-    camera_mesh.visual = camera_mesh.visual.to_color()
-    camera_mesh.apply_translation([0.0, 0.0, 1.0])
-    camera_mesh.apply_scale(0.05)
+    camera_mesh = trimesh.load(os.path.join(get_src_dir(), "assets", "meshes", "camera/camera.obj"))
 
     # frustum
     near_half_height = camera.near * np.tan(np.deg2rad(camera.fov / 2))
@@ -660,7 +606,9 @@ def create_camera_frustum(camera, color):
 
     # Create the frustum mesh
     frustum_mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
-    frustum_mesh.visual.vertex_colors = np.asarray(color, dtype=np.float32)
+    frustum_mesh.visual = trimesh.visual.ColorVisuals(
+        vertex_colors=np.tile(np.asarray(color, dtype=np.float32), (len(frustum_mesh.vertices), 1))
+    )
     return trimesh.util.concatenate([camera_mesh, frustum_mesh])
 
 
@@ -768,7 +716,7 @@ def create_sphere(radius, subdivisions=3, color=(1.0, 1.0, 1.0, 1.0)):
     vertices, faces, attrs = _create_unit_sphere_impl(subdivisions=subdivisions)
     vertices = vertices * radius
     visual = trimesh.visual.ColorVisuals()
-    visual._data["vertex_colors"] = np.tile(color_f32_to_u8(color), (len(vertices), 1))
+    visual._data["vertex_colors"] = np.tile((np.asarray(color) * 255).astype(np.uint8), (len(vertices), 1))
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces, visual=visual, process=False)
     mesh._cache.id_set()
     mesh._cache.cache.update(attrs)
@@ -789,7 +737,7 @@ def create_cylinder(radius, height, sections=None, color=(1.0, 1.0, 1.0, 1.0)):
     vertices, faces, attrs = _create_unit_cylinder_impl(sections=sections)
     vertices = vertices * (radius, radius, height)
     visual = trimesh.visual.ColorVisuals()
-    visual._data["vertex_colors"] = np.tile(color_f32_to_u8(color), (len(vertices), 1))
+    visual._data["vertex_colors"] = np.tile((np.asarray(color) * 255).astype(np.uint8), (len(vertices), 1))
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces, visual=visual, process=False)
     mesh._cache.id_set()
     mesh._cache.cache.update(attrs)
@@ -814,7 +762,7 @@ def create_cone(radius, height, sections=None, color=(1.0, 1.0, 1.0, 1.0)):
         normals /= np.linalg.norm(normals, axis=-1, keepdims=True)
         attrs[name] = normals
     visual = trimesh.visual.ColorVisuals()
-    visual._data["vertex_colors"] = np.tile(color_f32_to_u8(color), (len(vertices), 1))
+    visual._data["vertex_colors"] = np.tile((np.asarray(color) * 255).astype(np.uint8), (len(vertices), 1))
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces, visual=visual, process=False)
     mesh._cache.id_set()
     mesh._cache.cache.update(attrs)
@@ -935,7 +883,7 @@ def create_box(extents=None, color=(1.0, 1.0, 1.0, 1.0), bounds=None, wireframe=
         vertices = vertices * extents + pos
 
     visual = trimesh.visual.ColorVisuals()
-    visual._data["vertex_colors"] = np.tile(color_f32_to_u8(color), (len(vertices), 1))
+    visual._data["vertex_colors"] = np.tile((np.asarray(color) * 255).astype(np.uint8), (len(vertices), 1))
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces, visual=visual, process=False)
     mesh._cache.id_set()
     mesh._cache.cache.update(attrs)
@@ -943,18 +891,7 @@ def create_box(extents=None, color=(1.0, 1.0, 1.0, 1.0), bounds=None, wireframe=
     return mesh
 
 
-def create_plane(
-    normal=(0.0, 0.0, 1.0),
-    plane_size=(1e3, 1e3),
-    tile_size=(1, 1),
-    color_or_texture=DEFAULT_PLANE_TEXTURE_PATH,
-    double_sided=False,
-):
-    if isinstance(color_or_texture, str):
-        color, texture_path = None, color_or_texture
-    else:
-        color, texture_path = color_or_texture, None
-
+def create_plane(normal=(0.0, 0.0, 1.0), plane_size=(1e3, 1e3), tile_size=(1, 1), color=None):
     thickness = 1e-2  # for safety
     mesh = trimesh.creation.box(extents=[plane_size[0], plane_size[1], thickness])
     mesh.vertices[:, 2] -= thickness / 2
@@ -973,36 +910,25 @@ def create_plane(
         dtype=np.float32,
     )
     faces = np.arange(6, dtype=np.int32).reshape(-1, 3)
-
-    if double_sided:
-        # Add reversed faces for back-facing visibility
-        faces = np.vstack([faces, faces[:, ::-1]])
-
     vmesh = trimesh.Trimesh(verts, faces, process=False)
     vmesh.vertices[:, 2] -= thickness / 2
     vmesh.vertices = gu.transform_by_R(vmesh.vertices, gu.z_up_to_R(np.asarray(normal, dtype=np.float32)))
-
-    if texture_path is not None:
+    if color is None:  # use checkerboard texture
         n_tile_x, n_tile_y = plane_size[0] / tile_size[0], plane_size[1] / tile_size[1]
-        uv_coords = np.array(
-            [
-                [0, 0],
-                [n_tile_x, 0],
-                [n_tile_x, n_tile_y],
-                [0, 0],
-                [n_tile_x, n_tile_y],
-                [0, n_tile_y],
-            ],
-            dtype=np.float32,
-        )
-        if double_sided:
-            # Duplicate UV coords for back faces
-            uv_coords = np.vstack([uv_coords, uv_coords])
-
         vmesh.visual = trimesh.visual.TextureVisuals(
-            uv=uv_coords,
+            uv=np.array(
+                [
+                    [0, 0],
+                    [n_tile_x, 0],
+                    [n_tile_x, n_tile_y],
+                    [0, 0],
+                    [n_tile_x, n_tile_y],
+                    [0, n_tile_y],
+                ],
+                dtype=np.float32,
+            ),
             material=trimesh.visual.material.SimpleMaterial(
-                image=Image.open(os.path.join(get_assets_dir(), texture_path)),
+                image=Image.open(os.path.join(get_assets_dir(), "textures/checker.png")),
             ),
         )
     else:
@@ -1057,17 +983,27 @@ def make_tetgen_switches(cfg):
 
 
 def tetrahedralize_mesh(mesh, tet_cfg):
-    tet = tetgen.TetGen(mesh.vertices.astype(np.float64, copy=False), mesh.faces.astype(np.int32, copy=False))
+    if platform.machine() == "aarch64":
+        gs.raise_exception("This method is not support on Linux ARM because 'tetgen' module is crashing.")
 
+    # Importing pyvista and tetgen are very slow to import and not used very often. Let's delay import.
+    import pyvista as pv
+    import tetgen
+
+    pv_obj = pv.PolyData(
+        mesh.vertices, np.concatenate([np.full((mesh.faces.shape[0], 1), mesh.faces.shape[1]), mesh.faces], axis=1)
+    )
+    tet = tetgen.TetGen(pv_obj)
     # Build and apply the switches string directly, since
     # the Python wrapper sometimes ignores certain kwargs
     # (e.g. maxvolume). See: https://github.com/pyvista/tetgen/issues/24
-    verts, elems, *_ = tet.tetrahedralize(switches=make_tetgen_switches(tet_cfg))
-
+    switches = make_tetgen_switches(tet_cfg)
+    verts, elems = tet.tetrahedralize(switches=switches)
+    # visualize_tet(tet, pv_obj, show_surface=False, plot_cell_qual=False)
     return verts, elems
 
 
-def visualize_tet(tet, mesh, show_surface=True, plot_cell_qual=False):
+def visualize_tet(tet, pv_data, show_surface=True, plot_cell_qual=False):
     grid = tet.grid
     if show_surface:
         grid.plot(show_edges=True)
@@ -1087,11 +1023,8 @@ def visualize_tet(tet, mesh, show_surface=True, plot_cell_qual=False):
                 scalars=cell_qual, stitle="Quality", cmap="bwr", clim=[0, 1], flip_scalars=True, show_edges=True
             )
         else:
-            # Delaying import of 'pyvista' because it is an optional dependency
+            # Importing pyvista is very slow and not used very often. Let's delay import.
             import pyvista as pv
-
-            faces = np.concatenate([np.full((mesh.faces.shape[0], 1), mesh.faces.shape[1]), mesh.faces], axis=1)
-            pv_data = pv.PolyData(mesh.vertices, faces)
 
             plotter = pv.Plotter()
             plotter.add_mesh(subgrid, "lightgrey", lighting=True, show_edges=True)

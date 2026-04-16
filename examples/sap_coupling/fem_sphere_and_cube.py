@@ -1,5 +1,6 @@
 import argparse
 import sys
+import numpy as np
 import genesis as gs
 import os
 from huggingface_hub import snapshot_download

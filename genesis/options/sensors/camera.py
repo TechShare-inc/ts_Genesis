@@ -2,32 +2,13 @@
 Camera sensor options for Rasterizer, Raytracer, and Batch Renderer backends.
 """
 
-from typing import TYPE_CHECKING, Any, Literal
-
-from pydantic import Field, StrictBool
+from typing import Any, Optional
 
 import genesis as gs
-from genesis.typing import (
-    Matrix4x4Type,
-    PositiveFloat,
-    PositiveInt,
-    PositiveVec2IType,
-    UnitVec4FType,
-    ValidFloat,
-    Vec3FType,
-)
-
-from .options import RigidSensorOptionsMixin, SensorT
-
-if TYPE_CHECKING:
-    from genesis.engine.sensors.camera import (
-        BatchRendererCameraSensor,
-        RasterizerCameraSensor,
-        RaytracerCameraSensor,
-    )
+from .options import SensorOptions, Tuple3FType, RigidSensorOptionsMixin
 
 
-class BaseCameraOptions(RigidSensorOptionsMixin[SensorT]):
+class BaseCameraOptions(RigidSensorOptionsMixin, SensorOptions):
     """
     Base class for camera sensor options containing common properties.
 
@@ -35,37 +16,46 @@ class BaseCameraOptions(RigidSensorOptionsMixin[SensorT]):
     ----------
     res : tuple[int, int]
         Resolution as (width, height). Default is (512, 512).
-    pos : array-like[float, float, float]
+    pos : tuple[float, float, float]
         Camera position offset. If attached to a link, this is relative to the link frame.
         If not attached, this is relative to the world origin. Default is (3.5, 0.0, 1.5).
-    lookat : array-like[float, float, float]
+    lookat : tuple[float, float, float]
         Point the camera looks at in world frame.
-    up : array-like[float, float, float]
+    up : tuple[float, float, float]
         Up vector for camera orientation. Default is (0, 0, 1).
     fov : float
         Vertical field of view in degrees. Default is 60.0.
     lights : list[dict], optional
         List of lights to add for this camera backend. Each light is a dict with
         backend-specific parameters. Default is empty list.
-    offset_T : array-like, shape (4, 4), optional
-        4x4 transformation matrix specifying the camera's pose relative to the attached link.
-        If provided, this takes priority over pos_offset and euler_offset. Default is None.
     entity_idx : int
         The global entity index of the RigidEntity to which this sensor is attached. -1 or None for static sensors.
     link_idx_local : int, optional
         The local index of the RigidLink of the RigidEntity to which this sensor is attached.
     """
 
-    res: PositiveVec2IType = (512, 512)
-    pos: Vec3FType = (3.5, 0.0, 1.5)
-    lookat: Vec3FType = (0.0, 0.0, 0.0)
-    up: Vec3FType = (0.0, 0.0, 1.0)
-    fov: ValidFloat = Field(default=60.0, gt=0, lt=180)
-    lights: list[dict[str, Any]] = []
-    offset_T: Matrix4x4Type | None = None
+    res: tuple[int, int] = (512, 512)
+    pos: Tuple3FType = (3.5, 0.0, 1.5)
+    lookat: Tuple3FType = (0.0, 0.0, 0.0)
+    up: Tuple3FType = (0.0, 0.0, 1.0)
+    fov: float = 60.0
+    lights: list[dict] = []
+
+    def model_post_init(self, _):
+        if not isinstance(self.res, (tuple, list)) or len(self.res) != 2:
+            gs.raise_exception(f"res must be a tuple of (width, height), got: {self.res}")
+        if self.res[0] <= 0 or self.res[1] <= 0:
+            gs.raise_exception(f"res must have positive dimensions, got: {self.res}")
+        if self.fov <= 0 or self.fov >= 180:
+            gs.raise_exception(f"fov must be between 0 and 180 degrees, got: {self.fov}")
+        if not isinstance(self.lights, list):
+            gs.raise_exception(f"lights must be a list, got: {type(self.lights)}")
+        for i, light in enumerate(self.lights):
+            if not isinstance(light, dict):
+                gs.raise_exception(f"lights[{i}] must be a dict, got: {type(light)}")
 
 
-class RasterizerCameraOptions(BaseCameraOptions["RasterizerCameraSensor"]):
+class RasterizerCameraOptions(BaseCameraOptions):
     """
     Options for Rasterizer camera sensor (OpenGL-based rendering).
 
@@ -77,18 +67,20 @@ class RasterizerCameraOptions(BaseCameraOptions["RasterizerCameraSensor"]):
         Far clipping plane distance. Default is 100.0.
     """
 
-    near: PositiveFloat = 0.01
-    far: PositiveFloat = 100.0
+    near: float = 0.01
+    far: float = 100.0
     # Camera images are updated lazily on read(), so skip per-step measured-cache updates
-    update_ground_truth_only: StrictBool = True
+    update_ground_truth_only: bool = True
 
-    def model_post_init(self, context: Any) -> None:
-        super().model_post_init(context)
+    def model_post_init(self, _):
+        super().model_post_init(_)
+        if self.near <= 0:
+            gs.raise_exception(f"near must be positive, got: {self.near}")
         if self.far <= self.near:
             gs.raise_exception(f"far must be greater than near, got near={self.near}, far={self.far}")
 
 
-class RaytracerCameraOptions(BaseCameraOptions["RaytracerCameraSensor"]):
+class RaytracerCameraOptions(BaseCameraOptions):
     """
     Options for Raytracer camera sensor (LuisaRender path tracing).
 
@@ -116,20 +108,27 @@ class RaytracerCameraOptions(BaseCameraOptions["RaytracerCameraSensor"]):
         Environment sphere quaternion (w, x, y, z). Default is (1, 0, 0, 0).
     """
 
-    model: Literal["pinhole", "thinlens"] = "pinhole"
-    spp: PositiveInt = 256
-    denoise: StrictBool = False
-    aperture: PositiveFloat = 2.8
-    focal_len: PositiveFloat = 0.05
-    focus_dist: PositiveFloat = 3.0
+    model: str = "pinhole"
+    spp: int = 256
+    denoise: bool = False
+    aperture: float = 2.8
+    focal_len: float = 0.05
+    focus_dist: float = 3.0
     env_surface: Any = None  # gs.surfaces.Surface
-    env_radius: PositiveFloat = 15.0
-    env_pos: Vec3FType = (0.0, 0.0, 0.0)
-    env_quat: UnitVec4FType = (1.0, 0.0, 0.0, 0.0)
-    update_ground_truth_only: StrictBool = True
+    env_radius: float = 15.0
+    env_pos: Tuple3FType = (0.0, 0.0, 0.0)
+    env_quat: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
+    update_ground_truth_only: bool = True
+
+    def model_post_init(self, _):
+        super().model_post_init(_)
+        if self.model not in ("pinhole", "thinlens"):
+            gs.raise_exception(f"model must be 'pinhole' or 'thinlens', got: {self.model}")
+        if self.spp <= 0:
+            gs.raise_exception(f"spp must be positive, got: {self.spp}")
 
 
-class BatchRendererCameraOptions(BaseCameraOptions["BatchRendererCameraSensor"]):
+class BatchRendererCameraOptions(BaseCameraOptions):
     """
     Options for Batch Renderer camera sensor (Madrona GPU batch rendering).
 
@@ -141,13 +140,14 @@ class BatchRendererCameraOptions(BaseCameraOptions["BatchRendererCameraSensor"])
         Whether to use rasterizer mode. Default is True.
     """
 
-    model: Literal["pinhole", "thinlens", "fisheye"] = "pinhole"
-    near: PositiveFloat = 0.01
-    far: PositiveFloat = 100.0
-    use_rasterizer: StrictBool = True
-    update_ground_truth_only: StrictBool = True
+    near: float = 0.01
+    far: float = 100.0
+    use_rasterizer: bool = True
+    update_ground_truth_only: bool = True
 
-    def model_post_init(self, context: Any) -> None:
-        super().model_post_init(context)
+    def model_post_init(self, _):
+        super().model_post_init(_)
+        if self.near <= 0:
+            gs.raise_exception(f"near must be positive, got: {self.near}")
         if self.far <= self.near:
             gs.raise_exception(f"far must be greater than near, got near={self.near}, far={self.far}")

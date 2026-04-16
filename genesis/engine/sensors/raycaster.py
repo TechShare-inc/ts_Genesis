@@ -2,28 +2,25 @@ import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, NamedTuple, Type
 
+import gstaichi as ti
 import numpy as np
-import quadrants as qd
 import torch
 
 import genesis as gs
 import genesis.utils.array_class as array_class
-from genesis.engine.bvh import AABB, LBVH
 from genesis.options.sensors import (
     Raycaster as RaycasterOptions,
-)
-from genesis.options.sensors import (
     RaycastPattern,
 )
+from genesis.engine.bvh import AABB, LBVH, STACK_SIZE
 from genesis.utils.geom import (
-    qd_normalize,
-    qd_transform_by_quat,
-    qd_transform_by_trans_quat,
+    ti_normalize,
+    ti_transform_by_quat,
+    ti_transform_by_trans_quat,
     transform_by_quat,
     transform_by_trans_quat,
 )
 from genesis.utils.misc import concat_with_tensor, make_tensor_field
-from genesis.utils.raycast_qd import bvh_ray_cast, kernel_update_verts_and_aabbs
 from genesis.vis.rasterizer_context import RasterizerContext
 
 from .base_sensor import (
@@ -32,74 +29,222 @@ from .base_sensor import (
     Sensor,
     SharedSensorMetadata,
 )
+from .sensor_manager import register_sensor
 
 if TYPE_CHECKING:
     from genesis.ext.pyrender.mesh import Mesh
     from genesis.utils.ring_buffer import TensorRingBuffer
 
-    from .sensor_manager import SensorManager
+
+@ti.func
+def ray_triangle_intersection(ray_start, ray_dir, v0, v1, v2):
+    """
+    Moller-Trumbore ray-triangle intersection.
+
+    Returns: vec4(t, u, v, hit) where hit=1.0 if intersection found, 0.0 otherwise
+    """
+    result = ti.Vector.zero(gs.ti_float, 4)
+
+    edge1 = v1 - v0
+    edge2 = v2 - v0
+
+    # Begin calculating determinant - also used to calculate u parameter
+    h = ray_dir.cross(edge2)
+    a = edge1.dot(h)
+
+    # Check all conditions in sequence without early returns
+    valid = True
+
+    t = gs.ti_float(0.0)
+    u = gs.ti_float(0.0)
+    v = gs.ti_float(0.0)
+    f = gs.ti_float(0.0)
+    s = ti.Vector.zero(gs.ti_float, 3)
+    q = ti.Vector.zero(gs.ti_float, 3)
+
+    # If determinant is near zero, ray lies in plane of triangle
+    if ti.abs(a) < gs.EPS:
+        valid = False
+
+    if valid:
+        f = 1.0 / a
+        s = ray_start - v0
+        u = f * s.dot(h)
+
+        if u < 0.0 or u > 1.0:
+            valid = False
+
+    if valid:
+        q = s.cross(edge1)
+        v = f * ray_dir.dot(q)
+
+        if v < 0.0 or u + v > 1.0:
+            valid = False
+
+    if valid:
+        # At this stage we can compute t to find out where the intersection point is on the line
+        t = f * edge2.dot(q)
+
+        # Ray intersection
+        if t <= gs.EPS:
+            valid = False
+
+    if valid:
+        result = ti.math.vec4(t, u, v, 1.0)
+
+    return result
 
 
-@qd.kernel
+@ti.func
+def ray_aabb_intersection(ray_start, ray_dir, aabb_min, aabb_max):
+    """
+    Fast ray-AABB intersection test.
+    Returns the t value of intersection, or -1.0 if no intersection.
+    """
+    result = -1.0
+
+    # Use the slab method for ray-AABB intersection
+    sign = ti.select(ray_dir >= 0.0, 1.0, -1.0)
+    ray_dir = sign * ti.max(ti.abs(ray_dir), gs.EPS)
+    inv_dir = 1.0 / ray_dir
+
+    t1 = (aabb_min - ray_start) * inv_dir
+    t2 = (aabb_max - ray_start) * inv_dir
+
+    tmin = ti.min(t1, t2)
+    tmax = ti.max(t1, t2)
+
+    t_near = ti.max(tmin.x, tmin.y, tmin.z, 0.0)
+    t_far = ti.min(tmax.x, tmax.y, tmax.z)
+
+    # Check if ray intersects AABB
+    if t_near <= t_far:
+        result = t_near
+
+    return result
+
+
+@ti.kernel
+def kernel_update_aabbs(
+    free_verts_state: array_class.VertsState,
+    fixed_verts_state: array_class.VertsState,
+    verts_info: array_class.VertsInfo,
+    faces_info: array_class.FacesInfo,
+    aabb_state: ti.template(),
+):
+    for i_b, i_f in ti.ndrange(free_verts_state.pos.shape[1], faces_info.verts_idx.shape[0]):
+        aabb_state.aabbs[i_b, i_f].min.fill(ti.math.inf)
+        aabb_state.aabbs[i_b, i_f].max.fill(-ti.math.inf)
+
+        for i in ti.static(range(3)):
+            i_v = faces_info.verts_idx[i_f][i]
+            i_fv = verts_info.verts_state_idx[i_v]
+            if verts_info.is_fixed[i_v]:
+                pos_v = fixed_verts_state.pos[i_fv]
+                aabb_state.aabbs[i_b, i_f].min = ti.min(aabb_state.aabbs[i_b, i_f].min, pos_v)
+                aabb_state.aabbs[i_b, i_f].max = ti.max(aabb_state.aabbs[i_b, i_f].max, pos_v)
+            else:
+                pos_v = free_verts_state.pos[i_fv, i_b]
+                aabb_state.aabbs[i_b, i_f].min = ti.min(aabb_state.aabbs[i_b, i_f].min, pos_v)
+                aabb_state.aabbs[i_b, i_f].max = ti.max(aabb_state.aabbs[i_b, i_f].max, pos_v)
+
+
+@ti.kernel
 def kernel_cast_rays(
     fixed_verts_state: array_class.VertsState,
     free_verts_state: array_class.VertsState,
     verts_info: array_class.VertsInfo,
     faces_info: array_class.FacesInfo,
-    bvh_nodes: qd.template(),
-    bvh_morton_codes: qd.template(),  # maps sorted leaves to original triangle indices
-    links_pos: qd.types.ndarray(ndim=3),  # [n_env, n_sensors, 3]
-    links_quat: qd.types.ndarray(ndim=3),  # [n_env, n_sensors, 4]
-    ray_starts: qd.types.ndarray(ndim=2),  # [n_points, 3]
-    ray_directions: qd.types.ndarray(ndim=2),  # [n_points, 3]
-    max_ranges: qd.types.ndarray(ndim=1),  # [n_sensors]
-    no_hit_values: qd.types.ndarray(ndim=1),  # [n_sensors]
-    is_world_frame: qd.types.ndarray(ndim=1),  # [n_sensors]
-    points_to_sensor_idx: qd.types.ndarray(ndim=1),  # [n_points]
-    sensor_cache_offsets: qd.types.ndarray(ndim=1),  # [n_sensors] - cache start index for each sensor
-    sensor_point_offsets: qd.types.ndarray(ndim=1),  # [n_sensors] - point start index for each sensor
-    sensor_point_counts: qd.types.ndarray(ndim=1),  # [n_sensors] - number of points for each sensor
-    output_hits: qd.types.ndarray(ndim=2),  # [total_cache_size, n_env]
-    eps: float,
+    bvh_nodes: ti.template(),
+    bvh_morton_codes: ti.template(),  # maps sorted leaves to original triangle indices
+    links_pos: ti.types.ndarray(ndim=3),  # [n_env, n_sensors, 3]
+    links_quat: ti.types.ndarray(ndim=3),  # [n_env, n_sensors, 4]
+    ray_starts: ti.types.ndarray(ndim=2),  # [n_points, 3]
+    ray_directions: ti.types.ndarray(ndim=2),  # [n_points, 3]
+    max_ranges: ti.types.ndarray(ndim=1),  # [n_sensors]
+    no_hit_values: ti.types.ndarray(ndim=1),  # [n_sensors]
+    is_world_frame: ti.types.ndarray(ndim=1),  # [n_sensors]
+    points_to_sensor_idx: ti.types.ndarray(ndim=1),  # [n_points]
+    sensor_cache_offsets: ti.types.ndarray(ndim=1),  # [n_sensors] - cache start index for each sensor
+    sensor_point_offsets: ti.types.ndarray(ndim=1),  # [n_sensors] - point start index for each sensor
+    sensor_point_counts: ti.types.ndarray(ndim=1),  # [n_sensors] - number of points for each sensor
+    output_hits: ti.types.ndarray(ndim=2),  # [n_env, total_cache_size]
 ):
     """
-    Quadrants kernel for ray casting, accelerated by a Bounding Volume Hierarchy (BVH).
+    Taichi kernel for ray casting, accelerated by a Bounding Volume Hierarchy (BVH).
 
-    The result `output_hits` will be a 2D array of shape (total_cache_size, n_env) where in the first dimension,
+    The result `output_hits` will be a 2D array of shape (n_env, total_cache_size) where in the second dimension,
     each sensor's data is stored as [sensor_points (n_points * 3), sensor_ranges (n_points)].
     """
 
+    n_triangles = faces_info.verts_idx.shape[0]
     n_points = ray_starts.shape[0]
-    for i_p, i_b in qd.ndrange(n_points, output_hits.shape[-1]):
+    # batch, point
+    for i_b, i_p in ti.ndrange(output_hits.shape[0], n_points):
         i_s = points_to_sensor_idx[i_p]
 
         # --- 1. Setup Ray ---
-        link_pos = qd.math.vec3(links_pos[i_b, i_s, 0], links_pos[i_b, i_s, 1], links_pos[i_b, i_s, 2])
-        link_quat = qd.math.vec4(
+        link_pos = ti.math.vec3(links_pos[i_b, i_s, 0], links_pos[i_b, i_s, 1], links_pos[i_b, i_s, 2])
+        link_quat = ti.math.vec4(
             links_quat[i_b, i_s, 0], links_quat[i_b, i_s, 1], links_quat[i_b, i_s, 2], links_quat[i_b, i_s, 3]
         )
 
-        ray_start_local = qd.math.vec3(ray_starts[i_p, 0], ray_starts[i_p, 1], ray_starts[i_p, 2])
-        ray_start_world = qd_transform_by_trans_quat(ray_start_local, link_pos, link_quat)
+        ray_start_local = ti.math.vec3(ray_starts[i_p, 0], ray_starts[i_p, 1], ray_starts[i_p, 2])
+        ray_start_world = ti_transform_by_trans_quat(ray_start_local, link_pos, link_quat)
 
-        ray_dir_local = qd.math.vec3(ray_directions[i_p, 0], ray_directions[i_p, 1], ray_directions[i_p, 2])
-        ray_direction_world = qd_normalize(qd_transform_by_quat(ray_dir_local, link_quat), eps)
+        ray_dir_local = ti.math.vec3(ray_directions[i_p, 0], ray_directions[i_p, 1], ray_directions[i_p, 2])
+        ray_direction_world = ti_normalize(ti_transform_by_quat(ray_dir_local, link_quat), gs.EPS)
 
-        # --- 2. BVH Traversal for ray intersection ---
+        # --- 2. BVH Traversal ---
+        # FIXME: this duplicates the logic in LBVH.query() which also does traversal
+
         max_range = max_ranges[i_s]
-        hit_face, hit_distance, _hit_normal = bvh_ray_cast(
-            ray_start=ray_start_world,
-            ray_dir=ray_direction_world,
-            max_range=max_range,
-            i_b=i_b,
-            bvh_nodes=bvh_nodes,
-            bvh_morton_codes=bvh_morton_codes,
-            faces_info=faces_info,
-            verts_info=verts_info,
-            fixed_verts_state=fixed_verts_state,
-            free_verts_state=free_verts_state,
-            eps=eps,
-        )
+        hit_face = -1
+
+        # Stack for non-recursive traversal
+        node_stack = ti.Vector.zero(ti.i32, STACK_SIZE)
+        node_stack[0] = 0  # Start traversal at the root node (index 0)
+        stack_idx = 1
+
+        while stack_idx > 0:
+            stack_idx -= 1
+            node_idx = node_stack[stack_idx]
+
+            node = bvh_nodes[i_b, node_idx]
+
+            # Check if ray hits the node's bounding box
+            aabb_t = ray_aabb_intersection(ray_start_world, ray_direction_world, node.bound.min, node.bound.max)
+
+            if aabb_t >= 0.0 and aabb_t < max_range:
+                if node.left == -1:  # is leaf node
+                    # A leaf node corresponds to one of the sorted triangles. Find the original triangle index.
+                    sorted_leaf_idx = node_idx - (n_triangles - 1)
+                    i_f = ti.cast(bvh_morton_codes[0, sorted_leaf_idx][1], ti.i32)
+
+                    tri_vertices = ti.Matrix.zero(gs.ti_float, 3, 3)
+                    for i in ti.static(range(3)):
+                        i_v = faces_info.verts_idx[i_f][i]
+                        i_fv = verts_info.verts_state_idx[i_v]
+                        if verts_info.is_fixed[i_v]:
+                            tri_vertices[:, i] = fixed_verts_state.pos[i_fv]
+                        else:
+                            tri_vertices[:, i] = free_verts_state.pos[i_fv, i_b]
+                    v0, v1, v2 = tri_vertices[:, 0], tri_vertices[:, 1], tri_vertices[:, 2]
+
+                    # Perform the expensive ray-triangle intersection test
+                    hit_result = ray_triangle_intersection(ray_start_world, ray_direction_world, v0, v1, v2)
+
+                    if hit_result.w > 0.0 and hit_result.x < max_range and hit_result.x >= 0.0:
+                        max_range = hit_result.x
+                        hit_face = i_f
+                        # hit_u, hit_v could be stored here if needed
+                else:  # It's an INTERNAL node
+                    # Push children onto the stack for further traversal
+                    # Make sure stack doesn't overflow
+                    if stack_idx < ti.static(STACK_SIZE - 2):
+                        node_stack[stack_idx] = node.left
+                        node_stack[stack_idx + 1] = node.right
+                        stack_idx += 2
 
         # --- 3. Process Hit Result ---
         # The format of output_hits is: [sensor1 points][sensor1 ranges][sensor2 points][sensor2 ranges]...
@@ -110,31 +255,31 @@ def kernel_cast_rays(
         i_p_dist = i_p_offset + n_points_in_sensor * 3 + i_p_sensor  # index for distance output
 
         if hit_face >= 0:
-            dist = hit_distance
+            dist = max_range
             # Store distance at: cache_offset + (num_points_in_sensor * 3) + point_idx_in_sensor
-            output_hits[i_p_dist, i_b] = dist
+            output_hits[i_b, i_p_dist] = dist
 
             if is_world_frame[i_s]:
                 hit_point = ray_start_world + dist * ray_direction_world
 
                 # Store points at: cache_offset + point_idx_in_sensor * 3
-                output_hits[i_p_offset + i_p_sensor * 3 + 0, i_b] = hit_point.x
-                output_hits[i_p_offset + i_p_sensor * 3 + 1, i_b] = hit_point.y
-                output_hits[i_p_offset + i_p_sensor * 3 + 2, i_b] = hit_point.z
+                output_hits[i_b, i_p_offset + i_p_sensor * 3 + 0] = hit_point.x
+                output_hits[i_b, i_p_offset + i_p_sensor * 3 + 1] = hit_point.y
+                output_hits[i_b, i_p_offset + i_p_sensor * 3 + 2] = hit_point.z
             else:
                 # Local frame output along provided local ray direction
-                hit_point = dist * qd_normalize(
-                    qd.math.vec3(ray_directions[i_p, 0], ray_directions[i_p, 1], ray_directions[i_p, 2]), eps
+                hit_point = dist * ti_normalize(
+                    ti.math.vec3(ray_directions[i_p, 0], ray_directions[i_p, 1], ray_directions[i_p, 2]), gs.EPS
                 )
-                output_hits[i_p_offset + i_p_sensor * 3 + 0, i_b] = hit_point.x
-                output_hits[i_p_offset + i_p_sensor * 3 + 1, i_b] = hit_point.y
-                output_hits[i_p_offset + i_p_sensor * 3 + 2, i_b] = hit_point.z
+                output_hits[i_b, i_p_offset + i_p_sensor * 3 + 0] = hit_point.x
+                output_hits[i_b, i_p_offset + i_p_sensor * 3 + 1] = hit_point.y
+                output_hits[i_b, i_p_offset + i_p_sensor * 3 + 2] = hit_point.z
         else:
             # No hit
-            output_hits[i_p_offset + i_p_sensor * 3 + 0, i_b] = 0.0
-            output_hits[i_p_offset + i_p_sensor * 3 + 1, i_b] = 0.0
-            output_hits[i_p_offset + i_p_sensor * 3 + 2, i_b] = 0.0
-            output_hits[i_p_dist, i_b] = no_hit_values[i_s]
+            output_hits[i_b, i_p_offset + i_p_sensor * 3 + 0] = 0.0
+            output_hits[i_b, i_p_offset + i_p_sensor * 3 + 1] = 0.0
+            output_hits[i_b, i_p_offset + i_p_sensor * 3 + 2] = 0.0
+            output_hits[i_b, i_p_dist] = no_hit_values[i_s]
 
 
 @dataclass
@@ -160,6 +305,7 @@ class RaycasterSharedMetadata(RigidSensorMetadataMixin, SharedSensorMetadata):
     sensor_cache_offsets: torch.Tensor = make_tensor_field((0,), dtype_factory=lambda: gs.tc_int)
     sensor_point_offsets: torch.Tensor = make_tensor_field((0,), dtype_factory=lambda: gs.tc_int)
     sensor_point_counts: torch.Tensor = make_tensor_field((0,), dtype_factory=lambda: gs.tc_int)
+    output_hits: torch.Tensor = make_tensor_field((0, 0))  # FIXME: remove once we have contiguous cache slices
 
 
 class RaycasterData(NamedTuple):
@@ -167,33 +313,51 @@ class RaycasterData(NamedTuple):
     distances: torch.Tensor
 
 
-class RaycasterSensor(RigidSensorMixin, Sensor[RaycasterOptions, RaycasterSharedMetadata, RaycasterData]):
-    def __init__(self, options: RaycasterOptions, shared_metadata: RaycasterSharedMetadata, manager: "SensorManager"):
-        super().__init__(options, shared_metadata, manager)
+@register_sensor(RaycasterOptions, RaycasterSharedMetadata, RaycasterData)
+@ti.data_oriented
+class RaycasterSensor(RigidSensorMixin, Sensor):
+
+    def __init__(
+        self,
+        options: RaycasterOptions,
+        shared_metadata: RaycasterSharedMetadata,
+        data_cls: Type[RaycasterData],
+        manager: "gs.SensorManager",
+    ):
+        super().__init__(options, shared_metadata, data_cls, manager)
         self.debug_objects: list["Mesh"] = []
         self.ray_starts: torch.Tensor = torch.empty((0, 3), device=gs.device, dtype=gs.tc_float)
 
     @classmethod
     def _update_bvh(cls, shared_metadata: RaycasterSharedMetadata):
         """Rebuild BVH from current geometry in the scene."""
-        kernel_update_verts_and_aabbs(
+        from genesis.engine.solvers.rigid.rigid_solver_decomp import kernel_update_all_verts
+
+        kernel_update_all_verts(
             geoms_info=shared_metadata.solver.geoms_info,
             geoms_state=shared_metadata.solver.geoms_state,
             verts_info=shared_metadata.solver.verts_info,
-            faces_info=shared_metadata.solver.faces_info,
             free_verts_state=shared_metadata.solver.free_verts_state,
             fixed_verts_state=shared_metadata.solver.fixed_verts_state,
-            static_rigid_sim_config=shared_metadata.solver._static_rigid_sim_config,
-            aabb_state=shared_metadata.aabb,
         )
 
+        kernel_update_aabbs(
+            free_verts_state=shared_metadata.solver.free_verts_state,
+            fixed_verts_state=shared_metadata.solver.fixed_verts_state,
+            verts_info=shared_metadata.solver.verts_info,
+            faces_info=shared_metadata.solver.faces_info,
+            aabb_state=shared_metadata.aabb,
+        )
         shared_metadata.bvh.build()
 
     def build(self):
-        super().build()
+        super().build()  # set shared metadata from RigidSensorMixin
 
         # first lidar sensor initialization: build aabb and bvh
         if self._shared_metadata.bvh is None:
+            self._shared_metadata.output_hits = torch.empty(
+                (self._manager._sim._B, 0), device=gs.device, dtype=gs.tc_float
+            )
             self._shared_metadata.sensor_cache_offsets = concat_with_tensor(
                 self._shared_metadata.sensor_cache_offsets, 0
             )
@@ -224,8 +388,13 @@ class RaycasterSensor(RigidSensorMixin, Sensor[RaycasterOptions, RaycasterShared
         self._shared_metadata.sensors_ray_start_idx.append(self._shared_metadata.total_n_rays)
 
         # These fields are used to properly index into the big cache tensor in kernel_cast_rays
+        self._shared_metadata.output_hits = concat_with_tensor(
+            self._shared_metadata.output_hits,
+            torch.empty((self._manager._sim._B, self._cache_size), device=gs.device, dtype=gs.tc_float),
+            dim=-1,
+        )
         self._shared_metadata.sensor_cache_offsets = concat_with_tensor(
-            self._shared_metadata.sensor_cache_offsets, self._cache_size * (self._idx + 1)
+            self._shared_metadata.sensor_cache_offsets, self._cache_size
         )
         self._shared_metadata.sensor_point_offsets = concat_with_tensor(
             self._shared_metadata.sensor_point_offsets, self._shared_metadata.total_n_rays
@@ -247,8 +416,8 @@ class RaycasterSensor(RigidSensorMixin, Sensor[RaycasterOptions, RaycasterShared
         self._shared_metadata.no_hit_values = concat_with_tensor(self._shared_metadata.no_hit_values, no_hit_value)
 
     @classmethod
-    def reset(cls, shared_metadata: RaycasterSharedMetadata, shared_ground_truth_cache: torch.Tensor, envs_idx):
-        super().reset(shared_metadata, shared_ground_truth_cache, envs_idx)
+    def reset(cls, shared_metadata: RaycasterSharedMetadata, envs_idx):
+        super().reset(shared_metadata, envs_idx)
         cls._update_bvh(shared_metadata)
 
     def _get_return_format(self) -> tuple[tuple[int, ...], ...]:
@@ -272,26 +441,29 @@ class RaycasterSensor(RigidSensorMixin, Sensor[RaycasterOptions, RaycasterShared
             links_quat = links_quat[None]
 
         kernel_cast_rays(
-            shared_metadata.solver.fixed_verts_state,
-            shared_metadata.solver.free_verts_state,
-            shared_metadata.solver.verts_info,
-            shared_metadata.solver.faces_info,
-            shared_metadata.bvh.nodes,
-            shared_metadata.bvh.morton_codes,
-            links_pos,
-            links_quat,
-            shared_metadata.ray_starts,
-            shared_metadata.ray_dirs,
-            shared_metadata.max_ranges,
-            shared_metadata.no_hit_values,
-            shared_metadata.return_world_frame,
-            shared_metadata.points_to_sensor_idx,
-            shared_metadata.sensor_cache_offsets,
-            shared_metadata.sensor_point_offsets,
-            shared_metadata.sensor_point_counts,
-            shared_ground_truth_cache,
-            gs.EPS,
+            fixed_verts_state=shared_metadata.solver.fixed_verts_state,
+            free_verts_state=shared_metadata.solver.free_verts_state,
+            verts_info=shared_metadata.solver.verts_info,
+            faces_info=shared_metadata.solver.faces_info,
+            bvh_nodes=shared_metadata.bvh.nodes,
+            bvh_morton_codes=shared_metadata.bvh.morton_codes,
+            links_pos=links_pos,
+            links_quat=links_quat,
+            ray_starts=shared_metadata.ray_starts,
+            ray_directions=shared_metadata.ray_dirs,
+            max_ranges=shared_metadata.max_ranges,
+            no_hit_values=shared_metadata.no_hit_values,
+            is_world_frame=shared_metadata.return_world_frame,
+            points_to_sensor_idx=shared_metadata.points_to_sensor_idx,
+            sensor_cache_offsets=shared_metadata.sensor_cache_offsets,
+            sensor_point_offsets=shared_metadata.sensor_point_offsets,
+            sensor_point_counts=shared_metadata.sensor_point_counts,
+            output_hits=(
+                shared_ground_truth_cache if shared_ground_truth_cache.is_contiguous() else shared_metadata.output_hits
+            ),
         )
+        if not shared_ground_truth_cache.is_contiguous():
+            shared_ground_truth_cache[:] = shared_metadata.output_hits
 
     @classmethod
     def _update_shared_cache(
@@ -301,7 +473,7 @@ class RaycasterSensor(RigidSensorMixin, Sensor[RaycasterOptions, RaycasterShared
         shared_cache: torch.Tensor,
         buffered_data: "TensorRingBuffer",
     ):
-        buffered_data.set(shared_ground_truth_cache)
+        buffered_data.append(shared_ground_truth_cache)
         cls._apply_delay_to_shared_cache(shared_metadata, shared_cache, buffered_data)
 
     def _draw_debug(self, context: "RasterizerContext", buffer_updates: dict[str, np.ndarray]):

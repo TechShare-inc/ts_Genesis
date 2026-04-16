@@ -54,7 +54,7 @@ class Tensor(torch.Tensor):
                     element.scene = scene
                     element.uid = gs.UID()
                     element.parents = parents
-        except Exception:  # obj is a single tensor
+        except:  # obj is a single tensor
             if isinstance(obj, cls):
                 obj.scene = scene
                 obj.uid = gs.UID()
@@ -96,10 +96,10 @@ class Tensor(torch.Tensor):
         obj.scene = None
         return obj
 
-    def _backward_from_qd(self, qd_kernel, *args):
+    def _backward_from_ti(self, ti_kernel, *args):
         temp_grad = gs.zeros_like(self, requires_grad=False)
         temp_grad.assert_contiguous()
-        qd_kernel(*args, temp_grad)
+        ti_kernel(*args, temp_grad)
         self.backward(gradient=temp_grad, retain_graph=True)
 
     def assert_contiguous(self):

@@ -4,6 +4,7 @@ import genesis as gs
 
 
 def main():
+
     parser = argparse.ArgumentParser()
     parser.add_argument("-v", "--vis", action="store_true", default=False)
     parser.add_argument("-c", "--cpu", action="store_true", default=False)
@@ -14,13 +15,13 @@ def main():
 
     ########################## create a scene ##########################
     scene = gs.Scene(
-        rigid_options=gs.options.RigidOptions(
-            # constraint_solver=gs.constraint_solver.Newton,
-        ),
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(3.5, 0.0, 2.5),
             camera_lookat=(0.0, 0.0, 0.5),
             camera_fov=40,
+        ),
+        rigid_options=gs.options.RigidOptions(
+            # constraint_solver=gs.constraint_solver.Newton,
         ),
         show_viewer=args.vis,
     )
